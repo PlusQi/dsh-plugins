@@ -40,6 +40,38 @@
 
 规则 1 / 3 / 4 及 2 的 require 部分由 `scripts/check-plugin-structure.js` 自动检查（L1 静态证据）。规则 5 / 6 依赖评审，无自动检查。
 
+## Git 提交规范
+
+**格式**：`<scope>: <一句话摘要>`（subject ≤ 72 字符，细节动机移入 body）。scope 用小写标识符，推荐集合：
+
+| scope | 覆盖 |
+| --- | --- |
+| `tokprev`（或插件名） | `lib/client.js` 内该插件的实现块 |
+| `pack` | 包结构：`cordis.patch.yml` / `package.json` / `lib/index.js` / 共享设施 |
+| `docs` | 文档、图片、SPEC 归档 |
+| `release` | CHANGELOG、tag、发布相关 |
+| `repo` | 工程治理：AGENTS.md、hooks、guard 脚本 |
+
+**硬约束**：
+
+1. **职责单一**：一个提交一个意图；插件实现与包结构改动分开提交（评审时能独立判断行为影响）；
+2. **行为变化必须进 subject 可见范围**：禁止把功能/行为改动伪装成 `docs:` / `repo:`（语义欺骗，hook 拦不住，靠评审）；
+3. **确实无法拆分时**：在 body 写明混合原因与各部分验证，不得静默混提。
+
+**闸门分层**（`scripts/git/hooks/`，经 `core.hooksPath` 启用）：
+
+| 时点 | 机制 | 拦什么 |
+| --- | --- | --- |
+| 提交时 | `commit-msg` hook | 空信息、格式不符、全角冒号、超长 |
+| 推送时 | `pre-push` hook | 重跑结构 guard（覆盖 `--no-verify` 漏网提交） |
+
+注意（指南共识）：本地 hook 可被 `git push --no-verify` 绕过，本仓库单人维护无 CI，最终防线是规范自觉；merge / revert 自动提交直接放行。新 clone 启用方式：
+
+```powershell
+git config core.hooksPath scripts/git/hooks
+```
+
+
 ## 交付信息
 
 任何代码交付时报告：

@@ -1,0 +1,39 @@
+#!/bin/sh
+# commit-msg guard：校验 subject 格式（AGENTS.md「Git 提交规范」）。
+# 只拦格式与空信息，职责单一靠规范与评审（见 AGENTS.md）。
+msg_file="$1"
+subject=$(head -n 1 "$msg_file")
+
+if [ -z "$subject" ]; then
+	echo "[commit-msg] subject 为空 —— 填写 '<scope>: <一句话摘要>' 后重试" >&2
+	exit 1
+fi
+
+# merge / revert 自动提交直接放行
+case "$subject" in
+	"Merge "*|"Revert "*) exit 0 ;;
+esac
+
+# 拦全角冒号（中文输入法常见误入）
+case "$subject" in
+	*：*)
+		echo "[commit-msg] subject 含全角冒号 '：'，请用半角 ': ' —— 当前：$subject" >&2
+		exit 1
+		;;
+esac
+
+# scope 必须是小写标识符（新增插件名自动合法，无需改本脚本）
+case "$subject" in
+	[a-z0-9][a-z0-9-]*:*\ *) ;;
+	*)
+		echo "[commit-msg] subject 需匹配 '<scope>: <摘要>'（推荐 scope：tokprev / pack / docs / release / repo）" >&2
+		echo "             当前：$subject" >&2
+		exit 1
+		;;
+esac
+
+# subject 总长上限 72 字符
+if [ ${#subject} -gt 72 ]; then
+	echo "[commit-msg] subject 超过 72 字符（当前 ${#subject}），细节移入 body" >&2
+	exit 1
+fi

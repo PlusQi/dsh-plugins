@@ -1,0 +1,8 @@
+#!/bin/sh
+# pre-push guard：推送前跑多插件结构检查（AGENTS.md「按变更范围读取」的最低验证）。
+# 覆盖 git commit --no-verify 漏过的提交（指南 §5.6 分层闸门）。
+repo_root=$(git rev-parse --show-toplevel)
+node "$repo_root/scripts/check-plugin-structure.js" || {
+	echo "[pre-push] 结构 guard 未通过，推送中止。" >&2
+	exit 1
+}
