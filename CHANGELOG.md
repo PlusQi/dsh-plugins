@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-27
+
+### Changed
+
+- 客户端 apply 循环改为逐插件 try/catch：单个插件注册块抛错只跳过该插件（浏览器控制台报错），不再让整包 fiber FAILED 拖垮其余插件的 UI（多插件失败隔离；代价是 cordis 启动审计看不到该失败，诊断看控制台）。
+- 文档澄清按行禁用语义：profile patch 的行级 `disabled` 只摘除该行的 host fiber，客户端 bundle 随"包内是否还有任一行存活"整体存亡；包内多插件时禁用一行不会移除该插件的浏览器 UI，需要独立开关请独立成包（README 中/英、`cordis.patch.yml` 注释、AGENTS.md 硬规则 3、guard 文案已同步对齐，详见 `docs/debug/postmortem-v0.2.md` 复核补记）。
+
 ## [0.2.3] - 2026-08-27
 
 ### Fixed
@@ -32,7 +39,8 @@
 - 双语 README（中文默认 + English）及效果示意图。
 - 设计决策记录 SPEC-tokprev.md（现归档于 `docs/specs/archive/`）。
 
-[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.0...v0.2.1
