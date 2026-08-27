@@ -15,7 +15,7 @@ One repo = one profile bundle: all plugins live in a single pack — adding a pl
 
 A closed loop for per-turn token consumption: before you send, it tells you roughly how many tokens the next turn will feed in; after the turn ends, it reconciles with provider-reported actuals.
 
-![tokprev in action](./tokprev.png)
+![tokprev in action](./docs/assets/tokprev.png)
 
 Note: on-screen labels are currently Chinese-only; the examples below translate what they mean.
 

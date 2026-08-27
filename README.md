@@ -15,7 +15,7 @@
 
 单轮 token 消耗的"事前预告 + 事后实报"闭环：发送前告诉你这一轮大概要喂多少 token，轮次结束后用提供商上报的真数对账。
 
-![tokprev 效果示意](./tokprev.png)
+![tokprev 效果示意](./docs/assets/tokprev.png)
 
 ### 发送前预告（Composer 底部）
 
