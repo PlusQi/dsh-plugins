@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugins",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "个人 DSH 扩展集：单轮 token 消耗预告（tokprev）等浏览器 UI 插件的集合包",
   "type": "module",
   "main": "lib/index.js",

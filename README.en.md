@@ -57,7 +57,7 @@ Prerequisites: Node.js, git, pnpm (`npm i -g pnpm`). Private repos work too (pnp
 npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins
 
 # Pin a version: # accepts a tag / branch / commit
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.2.1
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.2.3
 
 # Local dev link (edit + restart to see changes)
 npx @deepseek-ai/dsh plugin --profile web add link:D:\Workbench\garbage\JavaScript\dsh-plugins

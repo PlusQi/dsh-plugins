@@ -4,11 +4,23 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-27
+
+### Fixed
+
+- 修复 tokprev 插件加载成功但 UI 不渲染的问题：客户端 cordis 通过 boot manifest 创建条目时不传递 config（仅 `{name: "dsh-plugins"}`），导致 `config.plugin` 为 `undefined`，apply 函数提前返回未注册任何 slot。改为客户端 apply 直接注册所有插件 UI（客户端 bundle 是单例，组件在数据不可用时返回 null）。同时改用 hooks（`useSession`/`useProjection`/`useInput`）获取响应式数据，对齐内置插件的模式。
+
+## [0.2.2] - 2026-08-27
+
+### Fixed
+
+- 正确修复 tokprev 插件加载失败：`config` 应作为 `apply(ctx, config)` 的第二个参数接收（而非 `ctx.config`），`effect` 是 cordis 内置动词无需注入，`inject` 仅声明服务依赖（如 `slots`）。v0.2.1 的修复方向错误（把 config/effect 加入 inject 导致 "waiting for services: config, effect"）。
+
 ## [0.2.1] - 2026-08-27
 
 ### Fixed
 
-- 修复 tokprev 插件加载失败：`inject` 数组遗漏 `config` 和 `effect` 声明，导致 cordis 运行时抛出 "cannot get property 'config' without inject"，插件整体无法加载。
+- （已撤回的错误修复）误将 `config` 和 `effect` 加入 `inject` 数组，导致插件停留在 "waiting for services: config, effect" 状态无法激活。正确修复见 v0.2.2。
 
 ## [0.2.0] - 2026-08-27
 
@@ -20,6 +32,8 @@
 - 双语 README（中文默认 + English）及效果示意图。
 - 设计决策记录 SPEC-tokprev.md（现归档于 `docs/specs/archive/`）。
 
-[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/PlusQi/dsh-plugins/releases/tag/v0.2.0
