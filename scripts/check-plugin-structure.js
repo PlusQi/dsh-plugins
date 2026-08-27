@@ -33,7 +33,7 @@ const clientText = readFileSync(clientPath, "utf8");
 const registered = new Map(); // 键 -> { line, css, apply }
 const pluginsBlock = clientText.match(/const PLUGINS = \{([\s\S]*?)\n\t+\};/);
 if (pluginsBlock === null) {
-	problems.push("lib/client.js: 找不到 `const PLUGINS = { ... }` 注册表 —— 硬规则 3 的分发前提，检查是否被误删或改名");
+	problems.push("lib/client.js: 找不到 `const PLUGINS = { ... }` 注册表 —— 客户端 apply 的唯一注册来源（硬规则 3），检查是否被误删或改名");
 } else {
 	for (const m of pluginsBlock[1].matchAll(/^\t+(\w+):\s*\{(.*)\}/gm)) {
 		registered.set(m[1], {
@@ -55,9 +55,9 @@ for (const row of rows) {
 // ── 硬规则 3：config.plugin 必须已在 PLUGINS 注册 ──
 for (const row of rows) {
 	if (row.plugin === null) {
-		problems.push(`cordis.patch.yml L${row.line} (id: ${row.id}): 缺少 config.plugin 分发键 —— fiber 会空跑整包 apply`);
+		problems.push(`cordis.patch.yml L${row.line} (id: ${row.id}): 缺少 config.plugin 分发键 —— host 侧分发/禁用锚点失效，且无法交叉校验 PLUGINS 注册表`);
 	} else if (!registered.has(row.plugin)) {
-		problems.push(`cordis.patch.yml L${row.line} (id: ${row.id}): config.plugin '${row.plugin}' 未在 lib/client.js 的 PLUGINS 注册表注册 —— 该 fiber 空转并告警`);
+		problems.push(`cordis.patch.yml L${row.line} (id: ${row.id}): config.plugin '${row.plugin}' 未在 lib/client.js 的 PLUGINS 注册表注册 —— 行与注册表漂移（host 半边按该键分发时会落空；客户端不消费此键，此为一致性校验）`);
 	}
 }
 
@@ -67,7 +67,7 @@ if (!clientText.includes('data-plugin-css="dsh-plugins/')) {
 }
 for (const [key, meta] of registered) {
 	if (!meta.css || !meta.apply) {
-		problems.push(`lib/client.js PLUGINS.${key}: 注册块缺少 ${!meta.css ? "css" : "apply"} 字段 —— patch 行激活该 fiber 时会注入 undefined`);
+		problems.push(`lib/client.js PLUGINS.${key}: 注册块缺少 ${!meta.css ? "css" : "apply"} 字段 —— 客户端 apply 将注入 undefined（样式 tag 写入 'undefined' / 注册抛错跳过该插件）`);
 	}
 }
 
@@ -78,11 +78,11 @@ for (const [i, line] of clientText.split("\n").entries()) {
 	}
 }
 
-// ── 孤儿插件（注册但无 patch 行，不会被激活）：提示不阻塞 ──
+// ── 孤儿插件（注册但无 patch 行，缺 host 锚点）：提示不阻塞 ──
 const activated = new Set(rows.map((r) => r.plugin));
 for (const key of registered.keys()) {
 	if (!activated.has(key)) {
-		warnings.push(`lib/client.js PLUGINS.${key}: 已注册但 cordis.patch.yml 无对应行 —— 该插件不会被激活（若在准备中可忽略）`);
+		warnings.push(`lib/client.js PLUGINS.${key}: 已注册但 cordis.patch.yml 无对应行 —— 无 host 侧存在/禁用锚点（客户端 UI 仍随任一存活行激活，但无法按行禁用；若在准备中可忽略）`);
 	}
 }
 
