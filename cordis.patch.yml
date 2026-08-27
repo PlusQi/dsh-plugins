@@ -1,12 +1,17 @@
 # dsh-plugins bundle patch: one row per plugin in this pack.
 # Every row keeps name 'dsh-plugins': the client half is discovered per
-# package name (a subpath name would load host-side only), and config.plugin
-# selects the registration block its fiber runs in lib/client.js - one module
-# under multiple config rows, like dsh-base's tool-subagent /
-# tool-subagent-fork. Row ids are pack-scoped and prefixed to never collide
-# with dsh-base / dsh-web-app builtin ids (patch layers override by id).
-# A plugin can be disabled per-profile from the profile's own
-# cordis.patch.yml:
+# package name (a subpath name would load host-side only). Rows are host
+# fibers only - the client boot manifest creates ONE entry per package with
+# no config (dsh-client-modules keys its boot graph rows by package name),
+# so lib/client.js applies ALL plugins unconditionally and config.plugin is
+# a host-plane dispatch key (empty host half today; dsh-base's
+# tool-subagent rows are the same-name multi-row reference). Row ids are
+# pack-scoped and prefixed to never collide with dsh-base / dsh-web-app
+# builtin ids (patch layers override by id).
+# Per-profile disable: a row's `disabled: true` removes that row's host
+# fiber only - the client bundle stays (and still registers the disabled
+# plugin's UI) while ANY row of this pack is live. Disabling every row drops
+# the whole bundle; per-plugin client off-switches need a separate package:
 #   - id: tokprev
 #     disabled: true
 - insert:
