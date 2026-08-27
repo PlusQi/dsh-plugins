@@ -52,6 +52,18 @@
 | `release` | CHANGELOG、tag、发布相关 |
 | `repo` | 工程治理：AGENTS.md、hooks、guard 脚本 |
 
+## 分支命名规范
+
+默认直推 `master`（单人维护无 PR 流程）。需要多线并行（原型试验、多插件并行开发）时开分支，命名 `<kind>/<scope>-<slug>`：
+
+| kind | 用途 |
+| --- | --- |
+| `feat` | 新插件或插件功能扩展（`feat/tokprev-export`） |
+| `fix` | 插件缺陷修复（`fix/tokprev-badge-rounding`） |
+| `repo` | 工程治理变更（`repo/hooks-ci`） |
+
+约定：`<scope>` 与提交 scope 同源（插件名 / pack / repo），slug 用小写连字符；分支生命与一个意图绑定，合回 master 后删除，不长期存活。
+
 **硬约束**：
 
 1. **职责单一**：一个提交一个意图；插件实现与包结构改动分开提交（评审时能独立判断行为影响）；
