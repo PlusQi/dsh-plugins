@@ -33,7 +33,7 @@
 
 1. **patch 行 name 必须是裸包名 `'dsh-plugins'`**：client 半边按包名发现；写成子路径只剩 host 半边；
 2. **client 模块图按包扁平**：所有插件实现在 `lib/client.js` 单文件内，禁止拆分文件或使用相对路径 `require`（factory 的 require 只认模块表词）；
-3. **每行 patch 一个 fiber，靠 `config.plugin` 分发**：新增插件必须同时在 `lib/client.js` 的 `PLUGINS` 注册表注册，否则该 fiber 空转并告警；
+3. **host 按行分 fiber，client 每包单 fiber**：patch 每行建一个 host fiber（`config.plugin` 是 host 侧分发键）；client boot manifest 每包只建一个条目且不传 config，`lib/client.js` 的 apply 无条件注册 `PLUGINS` 全部插件。新增插件必须同时在 `PLUGINS` 注册表注册，由 guard 静态校验防漂移（v0.2.3 前的"客户端按 config 分发 + 未注册告警"模型已废弃）；
 4. **每插件独立样式 tag**：经 `ensurePluginStyles` 注入 `data-plugin-css="dsh-plugins/<id>"`，禁止包级共享 `<style>`；
 5. **无构建步骤**：`lib/client.js` 即最终产物，禁止引入 TS / JSX / 构建脚本 / npm 运行时依赖；
 6. **兼容面**：所有宿主数据读取路径必须保持优雅降级（拿不到数据渲染 null，不抛错）。

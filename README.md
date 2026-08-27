@@ -84,7 +84,7 @@ npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
   disabled: true
 ```
 
-重启生效。
+重启生效。注意行的真实语义：`disabled` 只摘除该行的 **host 侧** fiber，浏览器侧 bundle 是否加载取决于**包内是否还有任一行存活**（DSH 的 boot graph 按包名判活，客户端每包一个 fiber、无条件注册全部插件）。包内只有 tokprev 一个插件时，禁用这行即整包下线、语义直观；将来包内有多个插件时，禁用一行**不会**移除该插件的浏览器 UI（其余行会让整个 bundle 存活）。需要按插件独立开关，请把该插件独立成包（见下文「新增插件」末尾）。
 
 ## 发布到 GitHub（维护者）
 
@@ -93,6 +93,8 @@ git remote add origin git@github.com:PlusQi/dsh-plugins.git
 git push -u origin master
 git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 ```
+
+**打 tag 前的硬门槛**（v0.2.0 三连败的教训，详见 [postmortem](./docs/debug/postmortem-v0.2.md)）：link 安装目标提交 -> 重启 dsh web -> 刷新页面，目检**每个插件**的 UI 元素实际渲染。"启动无报错 ≠ 插件正常工作"——slot 注册是副作用，apply 提前返回或抛错都可能静默失效。目检不过不打 tag。
 
 推上去即可被安装，无需注册表。`files` 字段保证 git 安装只带
 `lib/` + `cordis.patch.yml`（pnpm 打包时自动附带 README / LICENSE / package.json）。
@@ -116,8 +118,8 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 
 - **client bundle 按包名发现**：host 按 entry 的 `name` 解析 `<name>/package.json` 读 `dsh.client` 声明，整包服务 `exports["./client"]`。行 name 必须是裸包名 `dsh-plugins`；写成 `dsh-plugins/xxx` 子路径只剩 host 半边（dsh-web-app 的 `web-startup` 行就是这种 host-only 子路径用法）。
 - **client 模块图按包扁平**：一个包的 client 半边 = 一个模块节点，包内不能拆多文件（bundle factory 里的 `require` 只认模块表词，相对路径直接抛错）。所有插件共用 `lib/client.js` 单文件靠分段纪律维护，这是"无构建步骤"的边界。
-- **同名多行 = 同模块多 fiber**：patch 每行一个 fiber，各跑一遍 `apply(ctx)`；靠 `config.plugin` 分发到各自注册块（dsh-base 的 `tool-subagent` / `tool-subagent-fork` 同款模式）。没有分发，第二行会把第一个插件的 slot 原样再注册一遍。
-- **样式按插件分 tag**：多 fiber 下包级共享 `<style>` 会被先停的 fiber 拆掉；每插件一个 `data-plugin-css="dsh-plugins/<id>"` tag，随各自 fiber 生灭。
+- **host 按行分 fiber，client 每包单 fiber**：patch 每行建一个 **host** fiber，`config.plugin` 是 host 侧分发键（dsh-base 的 `tool-subagent` / `tool-subagent-fork` 是纯 host 包的同名多行参考；本包 host 半边为空，行实际充当存在/禁用锚点）。**client 侧 `__DSH_BOOT__` 每包只建一个条目且不传 config**（`dsh-client-modules` 按包名构建 boot graph），因此 `lib/client.js` 的 apply 无条件注册 `PLUGINS` 全部插件，靠组件数据不可用时返回 null 降级；客户端不存在"第二行再跑一遍 apply"，也不可能在客户端按 `config.plugin` 分发。
+- **样式按插件分 tag**：每插件一个 `data-plugin-css="dsh-plugins/<id>"` tag（`ensurePluginStyles` 幂等注入、随包 fiber 停止移除）；保持插件块独立颗粒度，日后单插件独立成包时连样式原样带走。
 
 插件长大了要独立发布/独立 repo？把注册块连同 patch 行复制出去单开包即可（模型见 [SPEC-tokprev.md](./docs/specs/archive/SPEC-tokprev.md) §11）。
 

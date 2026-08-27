@@ -86,7 +86,7 @@ To temporarily disable a single plugin (no code changes): append to `~/.dsh/prof
   disabled: true
 ```
 
-Restart to apply.
+Restart to apply. Note the row's real semantics: `disabled` removes that row's **host-side** fiber only — whether the browser bundle loads depends on **whether any row of the pack is still live** (DSH's boot graph keys on package name; the client has one fiber per package that registers ALL plugins unconditionally). While tokprev is the pack's only plugin, disabling its row takes the whole pack down — intuitive. Once the pack has multiple plugins, disabling one row does **not** remove that plugin's browser UI (the remaining rows keep the whole bundle alive). For a per-plugin off-switch, split the plugin into its own package (see the end of "Adding a new plugin" below).
 
 ## Publishing to GitHub (maintainers)
 
@@ -95,6 +95,8 @@ git remote add origin git@github.com:PlusQi/dsh-plugins.git
 git push -u origin master
 git tag v0.2.0; git push --tags   # optional: tag a version users can pin
 ```
+
+**Hard gate before tagging** (the lesson of v0.2.0's three failed rounds — see the [postmortem](./docs/debug/postmortem-v0.2.md)): link-install the target commit -> restart dsh web -> reload the page and visually verify **every plugin's** UI elements actually render. "Boots without errors ≠ plugin works" — slot registration is a side effect; an apply that returns early or throws can fail silently. No green visual check, no tag.
 
 Push and it's installable — no registry needed. The `files` field keeps git installs to
 `lib/` + `cordis.patch.yml` (pnpm automatically includes README / LICENSE / package.json when packing).
@@ -118,8 +120,8 @@ Four hard constraints of the multi-plugin structure (from DSH itself — read be
 
 - **Client bundles are discovered by package name**: the host resolves `<name>/package.json` by the entry's `name` to read the `dsh.client` declaration, and serves the whole package via `exports["./client"]`. The row's name must be the bare package name `dsh-plugins`; a subpath like `dsh-plugins/xxx` only loads the host half (dsh-web-app's `web-startup` row is exactly this host-only subpath usage).
 - **The client module graph is flat per package**: a package's client half = one module node — no splitting into multiple files (a bundle factory's `require` only knows module-table words; relative paths throw). All plugins share the single `lib/client.js` file, kept sane by section discipline — that's the boundary of "no build step".
-- **Same-name rows = multiple fibers of one module**: each patch row is a fiber, each running `apply(ctx)` once; `config.plugin` dispatches to its own registration block (same pattern as dsh-base's `tool-subagent` / `tool-subagent-fork`). Without the dispatch, a second row would re-register the first plugin's slots verbatim.
-- **Styles are tagged per plugin**: under multiple fibers, a pack-level shared `<style>` gets torn down by whichever fiber stops first; give each plugin its own `data-plugin-css="dsh-plugins/<id>"` tag that lives and dies with its fiber.
+- **Host gets one fiber per row; the client gets one fiber per package**: each patch row creates a **host** fiber, and `config.plugin` is a host-plane dispatch key (dsh-base's `tool-subagent` / `tool-subagent-fork` — a host-only package — is the same-name multi-row reference; this pack's host half is empty, so rows act as presence / disable anchors). The **client-side `__DSH_BOOT__` manifest creates ONE entry per package with no config** (`dsh-client-modules` builds its boot graph keyed by package name), so `lib/client.js`'s apply registers ALL `PLUGINS` entries unconditionally and components return null when their data is missing. There is no "second row runs apply again" client-side, and dispatching by `config.plugin` in the client is impossible.
+- **Styles are tagged per plugin**: give each plugin its own `data-plugin-css="dsh-plugins/<id>"` tag (`ensurePluginStyles` idempotent insert, removed when the pack fiber stops); this keeps per-plugin granularity so a plugin split out into its own package later takes its styles along verbatim.
 
 Outgrown the pack and want independent releases / a separate repo? Copy the registration block plus the patch row into a new package (the model is in [SPEC-tokprev.md](./docs/specs/archive/SPEC-tokprev.md) §11).
 
