@@ -1,10 +1,17 @@
 # dsh-plugins bundle patch: one row per plugin in this pack.
-# Each row id is pack-scoped and prefixed to never collide with dsh-base /
-# dsh-web-app builtin ids (patch layers override by id). A plugin can be
-# disabled per-profile from the profile's own cordis.patch.yml:
+# Every row keeps name 'dsh-plugins': the client half is discovered per
+# package name (a subpath name would load host-side only), and config.plugin
+# selects the registration block its fiber runs in lib/client.js - one module
+# under multiple config rows, like dsh-base's tool-subagent /
+# tool-subagent-fork. Row ids are pack-scoped and prefixed to never collide
+# with dsh-base / dsh-web-app builtin ids (patch layers override by id).
+# A plugin can be disabled per-profile from the profile's own
+# cordis.patch.yml:
 #   - id: tokprev
 #     disabled: true
 - insert:
     # tokprev: composer 下一轮 token 预告行 + 每轮收尾真实消耗徽标
     - id: tokprev
       name: 'dsh-plugins'
+      config:
+        plugin: tokprev
