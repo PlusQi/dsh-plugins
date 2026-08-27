@@ -13,7 +13,7 @@
 
 ```powershell
 # 开发链接（推荐：改代码重启即生效）
-npx @deepseek-ai/dsh plugin --profile web add link:D:\Workbench\dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web add link:D:\Workbench\garbage\JavaScript\dsh-plugins
 
 # 或从 GitHub（本仓库公开后）
 npx @deepseek-ai/dsh plugin --profile web add github:<user>/dsh-plugins
