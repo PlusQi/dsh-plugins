@@ -123,6 +123,8 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 
 ## 维护须知
 
+> 维护者与 AI Agent 的执行入口见 [AGENTS.md](./AGENTS.md)（路由表 + 硬规则 + 结构 guard）；本节为人类可读的详述。
+
 - **无构建步骤**：`lib/client.js` 即最终产物（纯 JS，不用 TS/JSX，React 经 ModuleLoader 注入）。改动 = 编辑 + 重启。
 - **兼容面**：插件依赖 UI slot 契约（`conversation.composer.dock`、`conversation.chat.assistant-actions`）与投影字段（`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`）。DSH 升级后若插件消失，先对照这些契约。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
 - **开发所对版本**：DSH `@deepseek-ai/dsh 0.1.1-rc.2`。
