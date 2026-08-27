@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-27
+
+### Fixed
+
+- 修复 tokprev 插件加载失败：`inject` 数组遗漏 `config` 和 `effect` 声明，导致 cordis 运行时抛出 "cannot get property 'config' without inject"，插件整体无法加载。
+
 ## [0.2.0] - 2026-08-27
 
 ### Added
@@ -14,5 +20,6 @@
 - 双语 README（中文默认 + English）及效果示意图。
 - 设计决策记录 SPEC-tokprev.md（现归档于 `docs/specs/archive/`）。
 
-[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/PlusQi/dsh-plugins/releases/tag/v0.2.0

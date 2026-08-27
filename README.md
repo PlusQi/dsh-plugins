@@ -55,7 +55,7 @@ UI slot `conversation.composer.dock`、`conversation.chat.assistant-actions`；�
 npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins
 
 # 固定版本：# 后可跟 tag / 分支 / commit
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.2.0
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.2.1
 
 # 本机开发链接（改代码重启即生效）
 npx @deepseek-ai/dsh plugin --profile web add link:D:\Workbench\garbage\JavaScript\dsh-plugins
