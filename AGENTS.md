@@ -47,40 +47,70 @@
 
 ## Git 提交规范
 
-**格式**：`<scope>: <一句话摘要>`（subject ≤ 72 字符，细节动机移入 body）。scope 用小写标识符，推荐集合：
+本仓库采用 [Conventional Commits](https://www.conventionalcommits.org/)（约定式提交）标准，与 Angular / React / Vue / Next 等开源项目对齐。提交信息由 header、body、footer 三段组成：
+
+```
+<type>(<scope>): <subject>
+<空行>
+<body>            # 可选
+<空行>
+<footer>          # 可选：BREAKING CHANGE / Closes / Fixes / Refs
+```
+
+**type（必填，小写）**：回答「改了什么性质」。推荐集合（基于 `@commitlint/config-conventional`）：
+
+| type | 含义 | 触发版本 |
+| --- | --- | --- |
+| `feat` | 新功能 / 新插件 / 插件功能扩展 | MINOR |
+| `fix` | 缺陷修复 | PATCH |
+| `docs` | 文档、图片、README/CHANGELOG 内容 | — |
+| `style` | 格式调整（空格/分号/排版，不影响运行） | — |
+| `refactor` | 重构（非修非增的代码改动） | — |
+| `perf` | 性能优化 | — |
+| `test` | 测试（增/改用例） | — |
+| `build` | 构建系统或外部依赖变更 | — |
+| `ci` | CI 配置与脚本 | — |
+| `chore` | 杂务（不产生用户影响的维护） | — |
+| `revert` | 回退某次提交 | — |
+
+`BREAKING CHANGE`（破坏性变更）：在 type/scope 后加 `!`（如 `feat(api)!:`），或在 footer 写 `BREAKING CHANGE: <描述>`，触发 MAJOR。
+
+**scope（可选，小写连字符）**：回答「改了哪块」。权威来源是 `PLUGINS` 注册表键（`lib/client.js`）：
 
 | scope | 覆盖 |
 | --- | --- |
-| `tokprev`（或插件名） | `lib/client.js` 内该插件的实现块 |
-| `pack` | 包结构：`cordis.patch.yml` / `package.json` / `lib/index.js` / 共享设施 |
-| `docs` | 文档、图片 |
-| `release` | CHANGELOG、tag、发布相关 |
-| `repo` | 工程治理：AGENTS.md、hooks、guard 脚本 |
+| 插件名（`tokprev` / `tokstats` / …） | 该插件的实现块，**含 `lib/client.js` 的 client 块与 `lib/index.js` 中该插件的 host 分发逻辑**（混合插件的 host 半边沿用插件名 scope，不归 `pack`） |
+| `pack` | 包级通用设施与分发框架：`cordis.patch.yml` / `package.json` / `lib/index.js` 中 pack 级分发逻辑 / 共享设施（**不含**某插件的 host 实现） |
+| `repo` | 工程治理文件：AGENTS.md、hooks、guard 脚本、本规范自身 |
 
-scope 的权威来源：插件名 = `PLUGINS` 注册表键（`lib/client.js`），插件改名/移除后旧 scope 引用即成悬空历史，仅存于历史提交不回收。
+scope 可省略：跨多模块或纯性质类提交（如 `docs: 修正错别字`、`chore: 升级依赖`）。插件改名/移除后旧 scope 引用即成悬空历史，仅存于历史提交不回收。
+
+**subject（必填，≤72 字符）**：一句话摘要，祈使句、小写开头、结尾无句号（与 Git 自动生成的 Merge/Revert 语气一致）。只讲 what，why 留给 body。
 
 **硬约束**：
 
 1. **职责单一**：一个提交一个意图；插件实现与包结构改动分开提交（评审时能独立判断行为影响）；
-2. **行为变化必须进 subject 可见范围**：禁止把功能/行为改动伪装成 `docs:` / `repo:`（语义欺骗，hook 拦不住，靠评审）；
+2. **行为变化必须进 subject 可见范围**：禁止把功能/行为改动伪装成 `docs:` / `chore:`（语义欺骗，hook 拦不住，靠评审）；
 3. **确实无法拆分时**：在 body 写明混合原因与各部分验证，不得静默混提。
 
-**body 约定**：
+**body / footer 约定**：
 
 - subject 与 body 之间空一行；
 - body 写动机与取舍（为什么这么做），不重复 diff 内容；
-- 混合提交（约束 3）在 body 分行列出各部分及其验证方式；
+- 混合提交（约束 3）在 body 分行列出各部分及其验证方式；包级改动（`pack`）与插件级改动同批时尤其要列清，例如：`分发框架：lib/index.js apply 分发；插件 patch 行：cordis.patch.yml；测试入口：test/*.test.mjs`。
+- 关联 issue 用 footer：`Closes #123` / `Fixes #456`（自动关闭）、`Refs #789`（仅引用）。
 - 例外标记：`Policy-Exception: <原因> -- <无法拆分/验证的说明>`，一条提交至多一条，理由为空视为无豁免。
 
 ## 分支命名规范
 
 默认直推 `master`（单人维护无 PR 流程）。需要多线并行（原型试验、多插件并行开发）时开分支，命名 `<kind>/<scope>-<slug>`：
 
-| kind | 用途 |
+| kind | 用途（与提交 type 集合对齐） |
 | --- | --- |
-| `feat` | 新插件或插件功能扩展（`feat/tokprev-export`） |
-| `fix` | 插件缺陷修复（`fix/tokprev-badge-rounding`） |
-| `repo` | 工程治理变更（`repo/hooks-ci`） |
+| `feat` | 新插件或插件功能扩展（`feat/tokstats-export`） |
+| `fix` | 插件缺陷修复（`fix/tokstats-badge-rounding`） |
+| `chore` | 工程治理 / 杂务变更（`chore/hooks-ci`） |
+| 其他 type | 同提交 type：`docs` / `refactor` / `perf` / `test` / `build` / `ci` / `revert` |
 
 约定：`<scope>` 与提交 scope 同源（插件名 / pack / repo），slug 用小写连字符；分支生命与一个意图绑定，合回 master 后删除，不长期存活。
 
@@ -88,7 +118,7 @@ scope 的权威来源：插件名 = `PLUGINS` 注册表键（`lib/client.js`）�
 
 | 时点 | 机制 | 拦什么 |
 | --- | --- | --- |
-| 提交时 | `commit-msg` hook | 空信息、格式不符、全角冒号、超长 |
+| 提交时 | `commit-msg` hook | 空信息、非 `<type>(<scope>?): <摘要>` 格式、全角冒号、超长(72) |
 | 推送时 | `pre-push` hook | 重跑结构 guard（覆盖 `--no-verify` 漏网提交） |
 
 注意（指南共识）：本地 hook 可被 `git push --no-verify` 绕过，本仓库单人维护无 CI，最终防线是规范自觉；merge / revert 自动提交直接放行。新 clone 启用方式：

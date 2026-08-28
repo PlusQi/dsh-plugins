@@ -1,11 +1,11 @@
 #!/bin/sh
-# commit-msg guard：校验 subject 格式（AGENTS.md「Git 提交规范」）。
+# commit-msg guard：校验 subject 格式（AGENTS.md「Git 提交规范」，Conventional Commits 标准）。
 # 只拦格式与空信息，职责单一靠规范与评审（见 AGENTS.md）。
 msg_file="$1"
 subject=$(head -n 1 "$msg_file")
 
 if [ -z "$subject" ]; then
-	echo "[commit-msg] subject 为空 —— 填写 '<scope>: <一句话摘要>' 后重试" >&2
+	echo "[commit-msg] subject 为空 —— 填写 '<type>(<scope>?): <摘要>' 后重试" >&2
 	exit 1
 fi
 
@@ -22,18 +22,19 @@ case "$subject" in
 		;;
 esac
 
-# scope 必须是小写标识符（新增插件名自动合法，无需改本脚本）
-case "$subject" in
-	[a-z0-9][a-z0-9-]*:*\ *) ;;
-	*)
-		echo "[commit-msg] subject 需匹配 '<scope>: <摘要>'（推荐 scope：tokprev / pack / docs / release / repo）" >&2
-		echo "             当前：$subject" >&2
-		exit 1
-		;;
-esac
+# 校验 '<type>(<scope>?)!?: <摘要>'（Conventional Commits 标准，见 AGENTS.md「Git 提交规范」）
+if ! echo "$subject" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9-]+\))?!?: .+'; then
+	echo "[commit-msg] subject 需匹配 '<type>(<scope>?): <摘要>'" >&2
+	echo "             type: feat/fix/docs/style/refactor/perf/test/build/ci/chore/revert" >&2
+	echo "             示例：feat(tokstats): 侧栏按钮 + 弹层四表" >&2
+	echo "             示例：chore(repo): 升级提交规范" >&2
+	echo "             示例：docs: 修正 README 错别字" >&2
+	echo "             当前：$subject" >&2
+	exit 1
+fi
 
-# subject 总长上限 72 字符
-if [ ${#subject} -gt 72 ]; then
-	echo "[commit-msg] subject 超过 72 字符（当前 ${#subject}），细节移入 body" >&2
+# subject 总长上限 72 字符（按字符计数，兼容中文 UTF-8）
+if [ "$(printf '%s' "$subject" | wc -m)" -gt 72 ]; then
+	echo "[commit-msg] subject 超过 72 字符（当前 $(printf '%s' "$subject" | wc -m)），细节移入 body" >&2
 	exit 1
 fi
