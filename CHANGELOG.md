@@ -2,7 +2,7 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
 
-## [Unreleased]
+## [0.3.0] - 2026-08-28
 
 ### Added
 
@@ -66,7 +66,8 @@
 - 双语 README（中文默认 + English）及效果示意图。
 - 设计决策记录 SPEC-tokprev.md（本地留存，不随仓库分发）。
 
-[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.1...v0.2.2
