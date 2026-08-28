@@ -2,7 +2,7 @@
 
 > 状态：Active
 > 适用范围：整个仓库
-> 最后核验：2026-08-27
+> 最后核验：2026-08-28
 > 维护责任：修改仓库级约束的提交者
 
 本文件是维护者与 AI Agent 进入仓库的执行入口。使用者视角的安装/发布说明见 [README.md](./README.md)，两者不重复承载内容。
@@ -13,9 +13,11 @@
 宿主兼容契约（UI slot / 投影字段，见 README「维护须知」）
   > 本文件硬规则
   > README 维护说明（「新增插件」「多插件四条硬约束」详述）
-  > Active spec（当前无）
-  > 本地设计记录（docs/specs/archive/，仅历史证据，不随仓库分发，不约束当前实现）
+  > 本地 Active spec（docs/specs/active/，进行中变更的 SDD 四件套；本地不随仓库分发，完成验收后回填并归档）
+  > 本地设计记录（docs/specs/archive/ 与 docs/debug/，仅历史证据，不随仓库分发，不约束当前实现）
 ```
+
+工程方法层参考本地指南（`docs/project-engineering-guardrails-guide.zh-CN.md`，不随仓库分发）：spec 反空壳与状态门（§7.7–7.8）、完成后的生命周期迁移映射（§5.8）。指南是方法论，不参与上表优先级仲裁。
 
 同级约束冲突且无法按上表裁决时，**停顿询问维护者**，不得自动选择。
 
@@ -27,6 +29,7 @@
 | 新增插件 | README「新增插件」四步；模式参考本地 SPEC-tokprev §11 | 同上 |
 | `cordis.patch.yml` | 本文件硬规则 1 / 3 | `node scripts/check-plugin-structure.js` |
 | `package.json`（dsh 声明 / exports / files） | README「发布到 GitHub」 | link 安装后重启目检 |
+| SDD 文档（`docs/specs/active/`） | 本地指南 §5.4 / §7.7–7.8 + 该变更的 SPEC | 状态头字段完整 + 交叉链接可达 |
 | 纯文档 / 图片 | — | 链接可达性检查 |
 
 ## 硬规则
