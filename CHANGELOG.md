@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+### Added
+
+- 正式测试套件 `test/`（node:test 零依赖，29 用例）：host 半边走完整 apply 管线断言（终值替换 / 递进采样 / 归因 / seed 去重 / 桶边界 / 日键 / checkpoint 对账 / flush 增量 / 版本回声 / 全降级矩阵），client 半边 mock react 浅渲染断言（按钮形态 / 面板四表 / 时间开关过滤 / 空态 / projection 值选择优先级）；`npm test` / `npm run guard` 入口。
+
+### Changed
+
+- **prices 覆盖改为字段级合并**：`config.prices` 只配 `input` 时保留内置 `output` 等未覆盖字段（原为模型级整条替换，半配置会静默丢失计价项）。
+- persistence 缺席时发布 `reason: "no-persistence"` 完成态空数据（兑现 SPEC 降级矩阵；原实现停「统计中」不落定）；启动扫盘成功后清除残留降级标注。
+- 四表行值统一中文格式「输入 X · 输出 Y · ¥成本」（原总览中文、工作区/模型/桶行英文 `X in · Y out` 且顺序不一致）；工作区/模型/桶行补输出 tokens（原来只显示输入）；未配价由「—」改为「未配价」自释；面板加宽至 380px、label 列 42% 给值列让位。
+- 计价展示收敛到「按模型」区：总览与工作区行值去掉金额（纯 token；总览 tooltip 悬停仍可见估算明细），定价归因本就按 provider/model——金额只在有意义分组处出现。
+
+### Fixed
+
+- **修复 tokstats 面板定位丢失**：面板 CSS 的 `position:fixed;left:0;bottom:0` 在实现块重写时意外丢失，面板退化为侧栏内的普通流元素——被宿主 `sidebarCol` 的 `overflow:hidden` 裁剪（rail 态仅 18px 宽不可用；展开态右侧数值列被裁、肉眼看不到任何数据）。补回 fixed 定位（锚定按钮矩形，钳制不越视口右缘），并新增 CSS 回归断言防止再丢。首版目检曾被 DOM 文本提取误导（数值在 DOM 里存在但视觉上被裁剪），本次复检改用几何 + `elementFromPoint` 遮挡检测双重确认两种侧栏形态下数值真实可见。
+
+### Added
+
+- **tokstats 插件**（本包首个含 host 半边实现的成员，包定性从纯 UI 升级为混合）：
+  - 侧栏脚「Token 统计」按钮 + 弹层面板：跨会话 token 消耗统计——总览（今日/本周/累计三行）、按工作区（Top 8）、按模型（含估算成本列，未配价显示 `—`）、上下文长度分布（2 的幂对数桶 + 缓存命中率），共享时间开关三档；
+  - host 聚合器（`lib/index.js`）：扫 durable 会话日志，usage 口径与宿主 tokenUsage 一致（同 `(turn,step)` 终值替换、fork seed 前缀去重、子会话归并根工作区）；checkpoint 增量（`(sessionId, storage revision)` 对账，落 `DSH_HOME/storages/`，防抖原子写）；`session/flush` 增量续折；经 `sessionProjections` 通道注册非会话级 `tokstats` unit 下发（imageLimits 先例 + 版本号回声变体触发推送）；
+  - 成本估算：内置 DeepSeek 官方高峰单价（元/Mtok），`cordis.patch.yml` 行 `config.prices` 可覆盖/追加第三方定价；
+  - 全链路优雅降级（persistence/projection 缺席、checkpoint 损坏、单会话 inspect 失败均不抛错）。
+
+### Changed
+
+- README 中/英、AGENTS.md、`package.json` description 同步混合包定性；「新增插件」/行禁用语义说明更新（tokstats 行承载 host 聚合器，禁用即停统计）。
+
 ## [0.2.4] - 2026-08-27
 
 ### Changed

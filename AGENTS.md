@@ -25,7 +25,9 @@
 
 | 变更 | 必读材料 | 最低验证 |
 | --- | --- | --- |
-| `lib/client.js` 任意改动 | 本文件硬规则 + README「维护须知」 | `node scripts/check-plugin-structure.js` + 重启 dsh web 目检 |
+| `lib/client.js` 任意改动 | 本文件硬规则 + README「维护须知」 | `npm test`（含 client 浅渲染断言）+ `node scripts/check-plugin-structure.js` + 重启 dsh web 目检 |
+| `lib/index.js`（host 半边，tokstats 聚合器） | 本文件硬规则 5 的 host 延伸（只用 `node:` 内建，npm 包 import 不可解析）+ 本地 SPEC-tokstats §3/§9 | `npm test`（host 管线断言）+ 重启 dsh web 目检四表 |
+| `test/`（测试套件） | 对应被测模块 + 现有用例 | `npm test` |
 | 新增插件 | README「新增插件」四步；模式参考本地 SPEC-tokprev §11 | 同上 |
 | `cordis.patch.yml` | 本文件硬规则 1 / 3 | `node scripts/check-plugin-structure.js` |
 | `package.json`（dsh 声明 / exports / files） | README「发布到 GitHub」 | link 安装后重启目检 |
@@ -36,9 +38,9 @@
 
 1. **patch 行 name 必须是裸包名 `'dsh-plugins'`**：client 半边按包名发现；写成子路径只剩 host 半边；
 2. **client 模块图按包扁平**：所有插件实现在 `lib/client.js` 单文件内，禁止拆分文件或使用相对路径 `require`（factory 的 require 只认模块表词）；
-3. **host 按行分 fiber，client 每包单 fiber**：patch 每行建一个 host fiber（`config.plugin` 是 host 侧分发键）；client boot manifest 每包只建一个条目且不传 config，`lib/client.js` 的 apply 无条件注册 `PLUGINS` 全部插件。新增插件必须同时在 `PLUGINS` 注册表注册，由 guard 静态校验防漂移（v0.2.3 前的"客户端按 config 分发 + 未注册告警"模型已废弃）；
+3. **host 按行分 fiber，client 每包单 fiber**：patch 每行建一个 host fiber（`config.plugin` 是 host 侧分发键，`lib/index.js` 的 `apply(ctx, config)` 据此分发——纯 UI 插件 host 半边为空，tokstats 的聚合器宿主在自己的行 fiber 上）；client boot manifest 每包只建一个条目且不传 config，`lib/client.js` 的 apply 无条件注册 `PLUGINS` 全部插件。新增插件必须同时在 `PLUGINS` 注册表注册，由 guard 静态校验防漂移（v0.2.3 前的"客户端按 config 分发 + 未注册告警"模型已废弃）；
 4. **每插件独立样式 tag**：经 `ensurePluginStyles` 注入 `data-plugin-css="dsh-plugins/<id>"`，禁止包级共享 `<style>`；
-5. **无构建步骤**：`lib/client.js` 即最终产物，禁止引入 TS / JSX / 构建脚本 / npm 运行时依赖；
+5. **无构建步骤**：`lib/client.js` 即最终产物，禁止引入 TS / JSX / 构建脚本 / npm 运行时依赖；host 半边 `lib/index.js` 同理零依赖——只许 import `node:` 内建（fs/os/path 等），npm 包（含 cordis/zod）在 pnpm link 安装路径下不可解析；
 6. **兼容面**：所有宿主数据读取路径必须保持优雅降级（拿不到数据渲染 null，不抛错）。
 
 规则 1 / 3 / 4 及 2 的 require 部分由 `scripts/check-plugin-structure.js` 自动检查（L1 静态证据）。规则 5 / 6 依赖评审，无自动检查。

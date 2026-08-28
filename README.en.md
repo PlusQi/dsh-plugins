@@ -10,6 +10,9 @@ One repo = one profile bundle: all plugins live in a single pack — adding a pl
 | Plugin      | Function                                                                                          | Design spec                          |
 | ----------- | ------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | **tokprev** | "Next-turn input preview" below the Composer (context + queued + draft, live as you type) + a real usage badge on each turn's closing message (provider-reported: input / cache / output / call count) | SPEC-tokprev.md |
+| **tokstats** | Sidebar-footer button + popover: cross-session token consumption stats (period overview / by workspace / by model with cost / context-length buckets, today · this week · total switch) | SPEC-tokstats.md (local) |
+
+> As of v0.2.4 this pack is **mixed**: tokprev is pure browser UI; tokstats ships a host half (scans durable session logs, incremental checkpoint, publishes via the projection channel).
 
 ## tokprev
 
@@ -47,6 +50,39 @@ A muted one-liner rendered on the closing assistant message of each turn (durabl
 ### Host contracts
 
 UI slots `conversation.composer.dock` and `conversation.chat.assistant-actions`; projection fields `contextPressure` / `contextBreakdown`; `AssistantMessageNode.usage`. Every read path degrades gracefully (renders null when data is missing, never throws).
+
+## tokstats
+
+Cross-session token consumption stats: the host's StatsLine only sees one session; this plugin scans every durable session log to answer "how much did I burn today", "which project eats the most", "how often do I run long contexts".
+
+A "Token 统计" button at the sidebar footer (an icon seat in rail mode) opens a popover panel:
+
+- **Overview**: today / this week (Monday-based) / total — call count and the four buckets (tokens only, no money);
+- **By workspace**: top 8 (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted);
+- **By model**: provider/model rows with an estimated cost column (a 「未配价」 marker when unpriced);
+- **Context-length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)` with requests / input / output / cache-hit rate.
+
+Same accounting as the host: billed input = `inputTokens + cacheReadTokens + cacheWriteTokens`; the final `assistant/message.usage` of a `(turn, step)` replaces its usage-chunk sample (no double counting). Money figures are **estimates**: built-in DeepSeek official peak rates (CNY/Mtok, overridable), and the panel says so.
+
+### Pricing config (optional)
+
+Built-in prices only cover the `deepseek-official` route. For third-party providers, append to your profile patch (`~/.dsh/profiles/web/cordis.patch.yml`, CNY/Mtok):
+
+```yaml
+- id: tokstats
+  patch:
+    config:
+      prices:
+        ark-codingplan:
+          glm-5.3: { input: 2, inputCached: 0.2, output: 4 }
+```
+
+### Host-side behavior
+
+- Asynchronous boot scan (never blocks startup): `listSnapshots` reconciles the checkpoint (`$DSH_HOME/storages/tokstats-checkpoint.json`, keyed by `(sessionId, storage revision)`) and re-inspects only sessions whose logs changed; a corrupt checkpoint falls back to a full rescan;
+- Live sessions refold incrementally from the last seq after each flush; changes are checkpointed with a debounce;
+- Data flows through the `sessionProjections` channel (`tokstats` unit); right after first install the panel shows "统计中…" until some session is opened or a push arrives;
+- Fully degraded: missing persistence/projection services never throw — the panel explains.
 
 ## Installation (web profile)
 
@@ -86,7 +122,7 @@ To temporarily disable a single plugin (no code changes): append to `~/.dsh/prof
   disabled: true
 ```
 
-Restart to apply. Note the row's real semantics: `disabled` removes that row's **host-side** fiber only — whether the browser bundle loads depends on **whether any row of the pack is still live** (DSH's boot graph keys on package name; the client has one fiber per package that registers ALL plugins unconditionally). While tokprev is the pack's only plugin, disabling its row takes the whole pack down — intuitive. Once the pack has multiple plugins, disabling one row does **not** remove that plugin's browser UI (the remaining rows keep the whole bundle alive). For a per-plugin off-switch, split the plugin into its own package (see the end of "Adding a new plugin" below).
+Restart to apply. Note the row's real semantics: `disabled` removes that row's **host-side** fiber only — whether the browser bundle loads depends on **whether any row of the pack is still live** (DSH's boot graph keys on package name; the client has one fiber per package that registers ALL plugins unconditionally). For a plugin whose host half does real work — like tokstats — disabling its row stops the aggregator (the client button stays but shows no data); for a pure-UI plugin like tokprev, disabling one row does **not** remove its browser UI (the remaining rows keep the whole bundle alive). For a per-plugin off-switch, split the plugin into its own package (see the end of "Adding a new plugin" below).
 
 ## Publishing to GitHub (maintainers)
 
@@ -120,15 +156,15 @@ Four hard constraints of the multi-plugin structure (from DSH itself — read be
 
 - **Client bundles are discovered by package name**: the host resolves `<name>/package.json` by the entry's `name` to read the `dsh.client` declaration, and serves the whole package via `exports["./client"]`. The row's name must be the bare package name `dsh-plugins`; a subpath like `dsh-plugins/xxx` only loads the host half (dsh-web-app's `web-startup` row is exactly this host-only subpath usage).
 - **The client module graph is flat per package**: a package's client half = one module node — no splitting into multiple files (a bundle factory's `require` only knows module-table words; relative paths throw). All plugins share the single `lib/client.js` file, kept sane by section discipline — that's the boundary of "no build step".
-- **Host gets one fiber per row; the client gets one fiber per package**: each patch row creates a **host** fiber, and `config.plugin` is a host-plane dispatch key (dsh-base's `tool-subagent` / `tool-subagent-fork` — a host-only package — is the same-name multi-row reference; this pack's host half is empty, so rows act as presence / disable anchors). The **client-side `__DSH_BOOT__` manifest creates ONE entry per package with no config** (`dsh-client-modules` builds its boot graph keyed by package name), so `lib/client.js`'s apply registers ALL `PLUGINS` entries unconditionally and components return null when their data is missing. There is no "second row runs apply again" client-side, and dispatching by `config.plugin` in the client is impossible.
+- **Host gets one fiber per row; the client gets one fiber per package**: each patch row creates a **host** fiber, and `config.plugin` is a host-plane dispatch key (dsh-base's `tool-subagent` / `tool-subagent-fork` is the same-name multi-row reference). This pack's `lib/index.js` dispatches `apply(ctx, config)` on that key: pure-UI plugins have empty host halves (rows act as presence / disable anchors), while tokstats's aggregator rides the `tokstats` row's fiber (row disabled = stats stop). The **client-side `__DSH_BOOT__` manifest creates ONE entry per package with no config** (`dsh-client-modules` builds its boot graph keyed by package name), so `lib/client.js`'s apply registers ALL `PLUGINS` entries unconditionally and components return null when their data is missing. There is no "second row runs apply again" client-side, and dispatching by `config.plugin` in the client is impossible. The host half has an extra module-graph constraint: under pnpm link installs the plugin's real path sits outside the host's node_modules tree, so **npm-package imports don't resolve** — `lib/index.js` uses only `node:` builtins plus the `apply(ctx, config)` arguments, importing no cordis/zod runtime dependency.
 - **Styles are tagged per plugin**: give each plugin its own `data-plugin-css="dsh-plugins/<id>"` tag (`ensurePluginStyles` idempotent insert, removed when the pack fiber stops); this keeps per-plugin granularity so a plugin split out into its own package later takes its styles along verbatim.
 
 Outgrown the pack and want independent releases / a separate repo? Copy the registration block plus the patch row into a new package (the model is in the local SPEC-tokprev §11).
 
 ## Maintenance notes
 
-- **No build step**: `lib/client.js` is the shipped artifact (plain JS, no TS/JSX; React is injected by the ModuleLoader). Changes = edit + restart.
-- **Compatibility surface**: plugins depend on UI slot contracts (`conversation.composer.dock`, `conversation.chat.assistant-actions`) and projection fields (`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`). If a plugin vanishes after a DSH upgrade, check these contracts first. Every read path degrades gracefully (renders null when data is missing, never throws).
+- **No build step**: `lib/client.js` is the shipped artifact (plain JS, no TS/JSX; React is injected by the ModuleLoader). Changes = edit + restart. The host half `lib/index.js` is likewise plain JS: it imports only `node:` builtins (fs/os/path), no npm runtime dependency.
+- **Compatibility surface**: tokprev depends on UI slot contracts (`conversation.composer.dock`, `conversation.chat.assistant-actions`) and projection fields (`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`); tokstats depends on the `sidebar.footer.action` slot (root scope — standard seats are only `useSessions`/`useWorkspaces`; the projection value is read from the session-list snapshot's `projectionValues`), host services `ctx.sessionPersistence` (`listSnapshots`/`inspect`/`readStoredRevision`) and `ctx.sessionProjections` (registers the `tokstats` unit), and the `session/flush` event. If a plugin vanishes after a DSH upgrade, check these contracts first. Every read path degrades gracefully (renders null when data is missing, never throws).
 - **Developed against**: DSH `@deepseek-ai/dsh 0.1.1-rc.2`.
 - **Dev loop**: prototype live in a session with dynamic Cordis plugins (`cordis_define` -> `cordis_run`) first, then land it in this pack once satisfied.
 
