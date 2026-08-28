@@ -1,9 +1,13 @@
 {
   "name": "dsh-plugins",
   "version": "0.2.4",
-  "description": "个人 DSH 扩展集：单轮 token 消耗预告（tokprev）等浏览器 UI 插件的集合包",
+  "description": "个人 DSH 扩展集：单轮 token 预告（tokprev）与跨会话 token 统计（tokstats，含 host 聚合半边）等插件的集合包",
   "type": "module",
   "main": "lib/index.js",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "guard": "node scripts/check-plugin-structure.js"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": {

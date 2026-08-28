@@ -20,3 +20,15 @@
       name: 'dsh-plugins'
       config:
         plugin: tokprev
+    # tokstats: 侧栏脚按钮 + 弹层面板，跨会话 token 消耗统计（本包首个含
+    # host 半边实现的插件：扫 durable 会话日志聚合，经 session-projection
+    # 通道下发；checkpoint 落 DSH_HOME/storages/tokstats-checkpoint.json）。
+    # config.prices 可覆盖/追加内置 DeepSeek 官方价（元/Mtok，缺省用内置高峰
+    # 单价），按 provider → model 两层映射：
+    #   prices:
+    #     third-party-x:            # provider 路由键（日志 request/header / assistant/message.source）
+    #       some-model: { input: 2, inputCached: 0.2, output: 4 }
+    - id: tokstats
+      name: 'dsh-plugins'
+      config:
+        plugin: tokstats
