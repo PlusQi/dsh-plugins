@@ -9,7 +9,7 @@ One repo = one profile bundle: all plugins live in a single pack — adding a pl
 
 | Plugin      | Function                                                                                          | Design spec                          |
 | ----------- | ------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **tokprev** | "Next-turn input preview" below the Composer (context + queued + draft, live as you type) + a real usage badge on each turn's closing message (provider-reported: input / cache / output / call count) | [SPEC-tokprev.md](./docs/specs/archive/SPEC-tokprev.md) |
+| **tokprev** | "Next-turn input preview" below the Composer (context + queued + draft, live as you type) + a real usage badge on each turn's closing message (provider-reported: input / cache / output / call count) | SPEC-tokprev.md |
 
 ## tokprev
 
@@ -123,7 +123,7 @@ Four hard constraints of the multi-plugin structure (from DSH itself — read be
 - **Host gets one fiber per row; the client gets one fiber per package**: each patch row creates a **host** fiber, and `config.plugin` is a host-plane dispatch key (dsh-base's `tool-subagent` / `tool-subagent-fork` — a host-only package — is the same-name multi-row reference; this pack's host half is empty, so rows act as presence / disable anchors). The **client-side `__DSH_BOOT__` manifest creates ONE entry per package with no config** (`dsh-client-modules` builds its boot graph keyed by package name), so `lib/client.js`'s apply registers ALL `PLUGINS` entries unconditionally and components return null when their data is missing. There is no "second row runs apply again" client-side, and dispatching by `config.plugin` in the client is impossible.
 - **Styles are tagged per plugin**: give each plugin its own `data-plugin-css="dsh-plugins/<id>"` tag (`ensurePluginStyles` idempotent insert, removed when the pack fiber stops); this keeps per-plugin granularity so a plugin split out into its own package later takes its styles along verbatim.
 
-Outgrown the pack and want independent releases / a separate repo? Copy the registration block plus the patch row into a new package (the model is in [SPEC-tokprev.md](./docs/specs/archive/SPEC-tokprev.md) §11).
+Outgrown the pack and want independent releases / a separate repo? Copy the registration block plus the patch row into a new package (the model is in the local SPEC-tokprev §11).
 
 ## Maintenance notes
 

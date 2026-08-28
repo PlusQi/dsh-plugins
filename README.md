@@ -9,7 +9,7 @@
 
 | 插件          | 功能                                                                                      | 设计定稿                                 |
 | ----------- | --------------------------------------------------------------------------------------- | ------------------------------------ |
-| **tokprev** | Composer 底部"下一轮 token 输入预告"（上下文 + 排队 + 草稿，随打字实时跳动）+ 每轮收尾消息上的真实消耗徽标（提供商上报：输入/缓存/输出/调用次数） | [SPEC-tokprev.md](./docs/specs/archive/SPEC-tokprev.md) |
+| **tokprev** | Composer 底部"下一轮 token 输入预告"（上下文 + 排队 + 草稿，随打字实时跳动）+ 每轮收尾消息上的真实消耗徽标（提供商上报：输入/缓存/输出/调用次数） | SPEC-tokprev.md |
 
 ## tokprev 用途说明
 
@@ -121,7 +121,7 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 - **host 按行分 fiber，client 每包单 fiber**：patch 每行建一个 **host** fiber，`config.plugin` 是 host 侧分发键（dsh-base 的 `tool-subagent` / `tool-subagent-fork` 是纯 host 包的同名多行参考；本包 host 半边为空，行实际充当存在/禁用锚点）。**client 侧 `__DSH_BOOT__` 每包只建一个条目且不传 config**（`dsh-client-modules` 按包名构建 boot graph），因此 `lib/client.js` 的 apply 无条件注册 `PLUGINS` 全部插件，靠组件数据不可用时返回 null 降级；客户端不存在"第二行再跑一遍 apply"，也不可能在客户端按 `config.plugin` 分发。
 - **样式按插件分 tag**：每插件一个 `data-plugin-css="dsh-plugins/<id>"` tag（`ensurePluginStyles` 幂等注入、随包 fiber 停止移除）；保持插件块独立颗粒度，日后单插件独立成包时连样式原样带走。
 
-插件长大了要独立发布/独立 repo？把注册块连同 patch 行复制出去单开包即可（模型见 [SPEC-tokprev.md](./docs/specs/archive/SPEC-tokprev.md) §11）。
+插件长大了要独立发布/独立 repo？把注册块连同 patch 行复制出去单开包即可（模型见本地 SPEC-tokprev §11）。
 
 ## 维护须知
 

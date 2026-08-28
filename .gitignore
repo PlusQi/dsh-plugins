@@ -6,3 +6,5 @@ Thumbs.db
 .env
 .env.*
 docs/debug/
+docs/specs/active/
+docs/specs/archive/

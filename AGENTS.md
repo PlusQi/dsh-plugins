@@ -14,7 +14,7 @@
   > 本文件硬规则
   > README 维护说明（「新增插件」「多插件四条硬约束」详述）
   > Active spec（当前无）
-  > 归档 SPEC（docs/specs/archive/，仅历史证据，不约束当前实现）
+  > 本地设计记录（docs/specs/archive/，仅历史证据，不随仓库分发，不约束当前实现）
 ```
 
 同级约束冲突且无法按上表裁决时，**停顿询问维护者**，不得自动选择。
@@ -24,7 +24,7 @@
 | 变更 | 必读材料 | 最低验证 |
 | --- | --- | --- |
 | `lib/client.js` 任意改动 | 本文件硬规则 + README「维护须知」 | `node scripts/check-plugin-structure.js` + 重启 dsh web 目检 |
-| 新增插件 | README「新增插件」四步；模式参考归档 SPEC-tokprev §11 | 同上 |
+| 新增插件 | README「新增插件」四步；模式参考本地 SPEC-tokprev §11 | 同上 |
 | `cordis.patch.yml` | 本文件硬规则 1 / 3 | `node scripts/check-plugin-structure.js` |
 | `package.json`（dsh 声明 / exports / files） | README「发布到 GitHub」 | link 安装后重启目检 |
 | 纯文档 / 图片 | — | 链接可达性检查 |
@@ -48,7 +48,7 @@
 | --- | --- |
 | `tokprev`（或插件名） | `lib/client.js` 内该插件的实现块 |
 | `pack` | 包结构：`cordis.patch.yml` / `package.json` / `lib/index.js` / 共享设施 |
-| `docs` | 文档、图片、SPEC 归档 |
+| `docs` | 文档、图片 |
 | `release` | CHANGELOG、tag、发布相关 |
 | `repo` | 工程治理：AGENTS.md、hooks、guard 脚本 |
 
