@@ -57,8 +57,8 @@ npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins
 # 固定版本：# 后可跟 tag / 分支 / commit
 npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.2.3
 
-# 本机开发链接（改代码重启即生效）
-npx @deepseek-ai/dsh plugin --profile web add link:D:\Workbench\garbage\JavaScript\dsh-plugins
+# 本机开发链接（改代码重启即生效，路径换成你本地的仓库位置）
+npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-plugins
 ```
 
 安装后**重启 dsh web 进程**并刷新页面（profile 组合仅启动时生效）。

@@ -59,8 +59,8 @@ npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins
 # Pin a version: # accepts a tag / branch / commit
 npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.2.3
 
-# Local dev link (edit + restart to see changes)
-npx @deepseek-ai/dsh plugin --profile web add link:D:\Workbench\garbage\JavaScript\dsh-plugins
+# Local dev link (edit + restart to see changes; replace with your local repo path)
+npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-plugins
 ```
 
 After installing, **restart the dsh web process** and reload the page (profile composition only happens at startup).
