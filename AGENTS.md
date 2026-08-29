@@ -44,7 +44,21 @@
 6. **兼容面**：所有宿主数据读取路径必须保持优雅降级（拿不到数据渲染 null，不抛错）；
 7. **每插件自带词典，语言跟随宿主**：`PLUGINS` 条目带 `ns`（`dsh-plugins.<id>`，带包前缀防撞车——重复注册同 `(ns, locale)` 会抛）与 `dicts`（`{ zh, en }`，zh 为键集真源，en 必须逐键对应）；slot 注册声明 `locale: ns` 取得 `t` 席位；`locale` 是硬依赖（与官方 UI 包一致），宿主无 locale 服务时整包不加载。文案一律写成 `{name}` 占位符整句模板（英文语序独立），带计数的文案按 `.one` / `.other` 成对出键。非语言记号（K/M、桶区间、`¥`）与时间格式（固定 24 小时制）不进词典。
 
-规则 1 / 3 / 4 及 2 的 require 部分由 `scripts/check-plugin-structure.js` 自动检查（L1 静态证据）。规则 5 / 6 / 7 依赖评审，无自动检查——其中 7 的键集一致性由 `npm test` 的双向断言兜住（官方靠 TS 类型在编译期保证，我们没有构建步骤）。
+规则 1 / 3 / 4 及 2 的 require 部分由 `scripts/check-plugin-structure.js` 自动检查（L1 静态证据）；规则 7 的 `ns` / `dicts` 字段同样由它静态校验（漏带即拦，无界面文案的插件显式写 `ns: null`），键集一致性由 `npm test` 的双向断言兜住（官方靠 TS 类型在编译期保证，我们没有构建步骤）。规则 5 / 6 及 7 的其余部分（整句模板、one/other 成对、记号不翻译）依赖评审。
+
+**词典术语对照**（只列直译容易走样的，其余按字面翻；同一概念出现多种措辞是最难查的回归——0.3.0 曾出现过 `X in · Y out` 与中文语序混用）：
+
+| 中文 | 英文 | 出现位置 |
+| --- | --- | --- |
+| 输入 / 输出 | in / out | 行值 `{input} in · {output} out` |
+| 缓存读 / 缓存写 | cache read / cache write | tooltip |
+| 命中（率） | cached | 桶行 `75% cached` |
+| N 次（调用） | N call / N calls | `.one` / `.other` 分形 |
+| 未配价 | no price（行值）/ no price configured（tooltip） | 按模型区 |
+| 估算 | est.（行内）/ estimates（脚注） | 金额标注 |
+| 统计中… | Scanning… | 面板角标与空态 |
+| 今日 / 本周 / 累计 | Today / This week / All time | 三档时间开关 |
+| 上下文长度分布 | Context length distribution | 分区标题 |
 
 ## Git 提交规范
 

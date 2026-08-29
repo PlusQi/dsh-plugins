@@ -150,7 +150,17 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 
 ## 新增插件（本包的维护模式）
 
-1. `lib/client.js` 的 `PLUGINS` 注册表加一段：`css` + `apply(ctx)`（helpers、组件、`ctx.slots.inject(...)` 注册块都放这段里）；
+1. `lib/client.js` 的 `PLUGINS` 注册表加一段：`css` + **`ns`** + **`dicts`** + `apply(ctx)`（helpers、组件、词典、`ctx.slots.inject(...)` 注册块都放这段里）：
+
+   ```js
+   const LOCALE_NS_XXX = "dsh-plugins.xxx";
+   const xxxZh = { "row.title": "标题" };
+   const xxxEn = { "row.title": "Title" };
+   // PLUGINS 内：xxx: { css: xxxCss, apply: xxxApply, ns: LOCALE_NS_XXX, dicts: { zh: xxxZh, en: xxxEn } }
+   ```
+
+   `npm run guard` 会拦下漏带 `ns` / `dicts` 的注册块；该插件确无任何界面文案时显式写 `ns: null`。
+
 2. `cordis.patch.yml` 加一行（`name` 固定 `'dsh-plugins'`，`config.plugin` 指向注册表键；id 带自己的前缀，别撞 dsh-base/dsh-web-app 内置 id）：
 
    ```yaml
@@ -160,8 +170,10 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
        plugin: xxx
    ```
 
-3. 在本地留存该插件的决策记录（不随仓库分发，供维护者回溯）；
-4. 重启进程。**零安装操作。**
+3. **文案一律走词典**：slot 注册声明 `locale: ns` 取得标准席位 `t`，文案写成 `{name}` 占位符整句模板（英文按英文语序重写，不做片段拼接），带计数的文案按 `.one` / `.other` 成对出键；测试里调 `assertDictPair`（`test/client-harness.mjs`）断言 zh/en 键集一致——本包无构建步骤，官方那层编译期保障只能由它替代。术语对照见 [AGENTS.md](./AGENTS.md) 硬规则 7。
+
+4. 在本地留存该插件的决策记录（不随仓库分发，供维护者回溯）；
+5. 重启进程。**零安装操作。**
 
 多插件结构的四条硬约束（来自 DSH 本体，调整前先读）：
 

@@ -150,7 +150,17 @@ Push and it's installable — no registry needed. The `files` field keeps git in
 
 ## Adding a new plugin (pack maintenance mode)
 
-1. Add one entry to the `PLUGINS` registry in `lib/client.js`: `css` + `apply(ctx)` (helpers, components, and the `ctx.slots.inject(...)` registration block all live in this section);
+1. Add one entry to the `PLUGINS` registry in `lib/client.js`: `css` + **`ns`** + **`dicts`** + `apply(ctx)` (helpers, components, dictionaries, and the `ctx.slots.inject(...)` registration block all live in this section):
+
+   ```js
+   const LOCALE_NS_XXX = "dsh-plugins.xxx";
+   const xxxZh = { "row.title": "标题" };
+   const xxxEn = { "row.title": "Title" };
+   // inside PLUGINS: xxx: { css: xxxCss, apply: xxxApply, ns: LOCALE_NS_XXX, dicts: { zh: xxxZh, en: xxxEn } }
+   ```
+
+   `npm run guard` rejects an entry missing `ns` / `dicts`; write `ns: null` explicitly when the plugin genuinely has no interface copy.
+
 2. Add one row to `cordis.patch.yml` (`name` is always `'dsh-plugins'`, `config.plugin` points to the registry key; prefix the id with your own so it never collides with dsh-base/dsh-web-app builtin ids):
 
    ```yaml
@@ -160,8 +170,10 @@ Push and it's installable — no registry needed. The `files` field keeps git in
        plugin: xxx
    ```
 
-3. Keep a local decision record for that plugin (not shipped with the repo, for maintainers to look back on);
-4. Restart the process. **Zero install operations.**
+3. **All copy goes through the dictionaries**: declare `locale: ns` on the slot registration to get the standard `t` seat, write copy as `{name}` whole-sentence templates (rewrite English in English word order — never concatenate fragments), and pair count-bearing keys as `.one` / `.other`; call `assertDictPair` (`test/client-harness.mjs`) in the tests to assert zh/en key-set parity — with no build step, that is the only replacement for the compile-time guarantee official packs get from TS. See hard rule 7 in [AGENTS.md](./AGENTS.md) for the terminology table.
+
+4. Keep a local decision record for that plugin (not shipped with the repo, for maintainers to look back on);
+5. Restart the process. **Zero install operations.**
 
 Four hard constraints of the multi-plugin structure (from DSH itself — read before changing):
 
