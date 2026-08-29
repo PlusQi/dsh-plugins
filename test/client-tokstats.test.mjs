@@ -1,148 +1,32 @@
-// tokstats client 半边测试：eval 真实 lib/client.js 产物（window.__ModuleLoader__
-// 捕获 factory），mock react + 伪 ctx.slots 浅渲染组件树断言。零依赖（node:test）。
+// tokstats client 半边测试：eval 真实 lib/client.js 产物，mock react + 伪
+// ctx.slots/locale 浅渲染组件树断言。公共装配见 test/client-harness.mjs。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
-// ── 一次性加载真实产物 ─────────────────────────────────────────────────────
-
-const clientPath = join(dirname(fileURLToPath(import.meta.url)), "..", "lib", "client.js");
-/** 捕获 ensurePluginStyles 注入的 style tag（回归断言 CSS 关键声明用）。 */
-const injectedStyleTags = [];
-const clientDef = (() => {
-	let captured = null;
-	globalThis.window = { __ModuleLoader__: { load: (def) => { captured = def; } } };
-	// 组件 effect 会触碰 window/document（真实浏览器 API），提供最小桩。
-	globalThis.window.innerHeight = 800;
-	globalThis.window.innerWidth = 1280;
-	globalThis.window.addEventListener = () => {};
-	globalThis.window.removeEventListener = () => {};
-	globalThis.document = {
-		addEventListener: () => {},
-		removeEventListener: () => {},
-		querySelector: () => null,
-		createElement: () => ({ dataset: {}, style: {} }),
-		head: { appendChild: (tag) => { injectedStyleTags.push(tag); } },
-	};
-	new Function(readFileSync(clientPath, "utf8"))();
-	assert.ok(captured !== null, "client.js 应被 __ModuleLoader__ 捕获");
-	return captured;
-})();
+import {
+	injectedStyleTags,
+	nodesOf,
+	textOf,
+	rowNodesOf,
+	renderDeep,
+	renderWithEffects,
+	setupClientBase,
+	assertDictPair,
+} from "./client-harness.mjs";
 
 // ── react mock：createElement 出普通对象树；hooks 做最小状态机 ─────────────
-
-function makeReactMock({ initialStates = [] } = {}) {
-	const react = {
-		Fragment: Symbol.for("react.fragment"),
-		initialStates,
-		stateValues: [],
-		_effects: [],
-		_idx: 0,
-		reset() { react._idx = 0; },
-		clearStates() { react.stateValues.length = 0; react._idx = 0; },
-		runEffects() {
-			for (const fn of react._effects.splice(0)) {
-				try { fn(); } catch { /* effect 内部异常不阻断断言 */ }
-			}
-		},
-	};
-	// 对齐 React.createElement 语义：子元素同时挂到 props.children（函数组件解构用）。
-	react.createElement = (type, props, ...children) => {
-		const flat = children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false && c !== true);
-		const merged = { ...(props ?? {}) };
-		if (flat.length > 0 && merged.children === undefined) merged.children = flat.length === 1 ? flat[0] : flat;
-		return { type, props: merged, children: flat };
-	};
-	react.useState = (init) => {
-		const i = react._idx++;
-		if (!(i in react.stateValues)) {
-			react.stateValues[i] = i < react.initialStates.length && react.initialStates[i] !== undefined
-				? react.initialStates[i]
-				: typeof init === "function" ? init() : init;
-		}
-		return [react.stateValues[i], (v) => {
-			react.stateValues[i] = typeof v === "function" ? v(react.stateValues[i]) : v;
-		}];
-	};
-	react.useMemo = (f) => f();
-	react.useRef = () => ({ current: { getBoundingClientRect: () => ({ left: 12, top: 340 }), contains: () => false } });
-	react.useEffect = (fn) => { react._effects.push(fn); };
-	react.useLayoutEffect = (fn) => { react._effects.push(fn); };
-	return react;
-}
-
-// ── 树遍历 / 文本提取 ─────────────────────────────────────────────────────
-
-function nodesOf(root) {
-	const out = [];
-	(function walk(n) {
-		if (n && typeof n === "object" && n.type !== undefined) {
-			out.push(n);
-			for (const c of n.children ?? []) walk(c);
-		}
-	})(root);
-	return out;
-}
-
-function textOf(node) {
-	const parts = [];
-	(function walk(n) {
-		if (typeof n === "string" || typeof n === "number") { parts.push(String(n)); return; }
-		if (Array.isArray(n)) { n.forEach(walk); return; }
-		if (n && typeof n === "object") for (const c of n.children ?? []) walk(c);
-	})(node);
-	return parts.join("");
-}
-
-/** 行节点判定：className 按词边界匹配（rowLabel/rowValue 是别的 class，不能靠 includes）。 */
-const ROW_CLASS = /(?:^|\s)dsh-tokstats-row(?:\s|$)/;
-function rowNodesOf(root) {
-	return nodesOf(root).filter((n) => typeof n.props.className === "string" && ROW_CLASS.test(n.props.className));
-}
 
 // ── 测试装配 ───────────────────────────────────────────────────────────────
 
 /** factory(react) → apply(伪 ctx) → 捕获 sidebar.footer.action 的按钮组件。 */
-function setupClient({ initialStates } = {}) {
-	const react = makeReactMock({ initialStates });
-	const exportsObj = clientDef.factory(() => react);
-	const registrations = [];
-	const ctx = {
-		slots: {
-			inject: (name, fn) => { fn(); return () => {}; },
-			register: (opts, comp) => { registrations.push({ opts, comp }); return () => {}; },
-		},
-		effect: () => () => {},
-	};
-	exportsObj.apply(ctx);
-	const button = registrations.find((r) => r.opts.name === "sidebar.footer.action");
+function setupClient(opts) {
+	const base = setupClientBase(opts);
+	const button = base.componentOf("sidebar.footer.action");
 	assert.ok(button, "应注册 sidebar.footer.action");
-	return { react, exportsObj, registrations, button: button.comp };
+	return { ...base, button };
 }
 
 /** 渲染按钮（含 effects 执行 + 一次重渲以反映 setAnchor），返回第二次树。 */
-function renderButton(react, button, props) {
-	let tree = button(props);
-	react.runEffects();
-	react.reset();
-	tree = button(props);
-	react.reset();
-	return tree;
-}
-
-/**
- * 深渲染：递归执行树中的函数型组件节点（mock createElement 不自动执行组件），
- * 产出全部为宿主元素（svg/div/button/...）的可断言树。
- */
-function renderDeep(react, node, depth = 0) {
-	if (node === null || node === undefined || typeof node !== "object") return node;
-	if (typeof node.type === "function" && depth < 24) {
-		return renderDeep(react, node.type(node.props), depth + 1);
-	}
-	return { ...node, children: (node.children ?? []).map((c) => renderDeep(react, c, depth)) };
-}
+const renderButton = (react, button, props) => renderWithEffects(react, button, props);
 
 /** 从按钮树中取出 Panel 组件引用（open=true 时才渲染）。 */
 function panelComponentOf(tree) {
