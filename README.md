@@ -7,10 +7,10 @@
 
 ## 插件清单
 
-| 插件          | 功能                                                                                      | 设计定稿                                 |
-| ----------- | --------------------------------------------------------------------------------------- | ------------------------------------ |
-| **tokprev** | Composer 底部"下一轮 token 输入预告"（上下文 + 排队 + 草稿，随打字实时跳动）+ 每轮收尾消息上的真实消耗徽标（提供商上报：输入/缓存/输出/调用次数） | SPEC-tokprev.md |
-| **tokstats** | 侧栏脚按钮弹层面板：跨会话 token 消耗统计（时间段总览 / 按工作区 / 按模型含成本 / 上下文长度分布，今日·本周·累计三档切换） | SPEC-tokstats.md（本地） |
+| 插件          | 功能                                                                                      |
+| ----------- | --------------------------------------------------------------------------------------- |
+| **tokprev** | Composer 底部"下一轮 token 输入预告"（上下文 + 排队 + 草稿，随打字实时跳动）+ 每轮收尾消息上的真实消耗徽标（提供商上报：输入/缓存/输出/调用次数） |
+| **tokstats** | 侧栏脚按钮弹层面板：跨会话 token 消耗统计（时间段总览 / 按工作区 / 按模型含成本 / 上下文长度分布，今日·本周·累计三档切换） |
 
 > 本包从 v0.2.4 起是**混合包**：tokprev 是纯浏览器 UI；tokstats 含 host 半边实现（扫 durable 会话日志聚合、checkpoint 增量、projection 下发）。
 
@@ -61,6 +61,8 @@ UI slot `conversation.composer.dock`、`conversation.chat.assistant-actions`；�
 ## tokstats 用途说明
 
 跨会话 token 消耗统计：宿主 StatsLine 只看单会话，本插件扫全部 durable 会话日志回答「今天烧了多少」「哪个项目吃得最多」「长上下文请求占比多高」。
+
+![tokstats 面板效果示意](./docs/assets/tokstats.png)
 
 侧栏底部「Token 统计」按钮（rail 模式为图标位）点开弹层面板：
 
@@ -158,7 +160,7 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
        plugin: xxx
    ```
 
-3. 写 `SPEC-xxx.md` 决策记录；
+3. 在本地留存该插件的决策记录（不随仓库分发，供维护者回溯）；
 4. 重启进程。**零安装操作。**
 
 多插件结构的四条硬约束（来自 DSH 本体，调整前先读）：
@@ -168,7 +170,7 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 - **host 按行分 fiber，client 每包单 fiber**：patch 每行建一个 **host** fiber，`config.plugin` 是 host 侧分发键（dsh-base 的 `tool-subagent` / `tool-subagent-fork` 是同名多行参考）。本包 `lib/index.js` 的 `apply(ctx, config)` 按该键分发：纯 UI 插件的 host 半边为空（行即存在/禁用锚点），tokstats 的 host 聚合器宿主在 `tokstats` 行的 fiber 上（行禁用 = 统计停摆）。**client 侧 `__DSH_BOOT__` 每包只建一个条目且不传 config**（`dsh-client-modules` 按包名构建 boot graph），因此 `lib/client.js` 的 apply 无条件注册 `PLUGINS` 全部插件，靠组件数据不可用时返回 null 降级；客户端不存在"第二行再跑一遍 apply"，也不可能在客户端按 `config.plugin` 分发。host 半边额外受模块图约束：pnpm link 安装下插件真实路径不在宿主 node_modules 树内，**npm 包 import 不可解析**——`lib/index.js` 只用 `node:` 内建 + `apply(ctx, config)` 参数，不 import cordis/zod 等运行时依赖。
 - **样式按插件分 tag**：每插件一个 `data-plugin-css="dsh-plugins/<id>"` tag（`ensurePluginStyles` 幂等注入、随包 fiber 停止移除）；保持插件块独立颗粒度，日后单插件独立成包时连样式原样带走。
 
-插件长大了要独立发布/独立 repo？把注册块连同 patch 行复制出去单开包即可（模型见本地 SPEC-tokprev §11）。
+插件长大了要独立发布/独立 repo？把注册块连同 patch 行复制出去单开包即可（可参考本仓库已有插件的实现与打包方式）。
 
 ## 维护须知
 

@@ -7,10 +7,10 @@ One repo = one profile bundle: all plugins live in a single pack — adding a pl
 
 ## Plugins
 
-| Plugin      | Function                                                                                          | Design spec                          |
-| ----------- | ------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| **tokprev** | "Next-turn input preview" below the Composer (context + queued + draft, live as you type) + a real usage badge on each turn's closing message (provider-reported: input / cache / output / call count) | SPEC-tokprev.md |
-| **tokstats** | Sidebar-footer button + popover: cross-session token consumption stats (period overview / by workspace / by model with cost / context-length buckets, today · this week · total switch) | SPEC-tokstats.md (local) |
+| Plugin      | Function                                                                                          |
+| ----------- | ------------------------------------------------------------------------------------------------- |
+| **tokprev** | "Next-turn input preview" below the Composer (context + queued + draft, live as you type) + a real usage badge on each turn's closing message (provider-reported: input / cache / output / call count) |
+| **tokstats** | Sidebar-footer button + popover: cross-session token consumption stats (period overview / by workspace / by model with cost / context-length buckets, today · this week · total switch) |
 
 > As of v0.2.4 this pack is **mixed**: tokprev is pure browser UI; tokstats ships a host half (scans durable session logs, incremental checkpoint, publishes via the projection channel).
 
@@ -27,9 +27,9 @@ Both plugins render their copy through the host locale service and **follow DSH 
 
 A closed loop for per-turn token consumption: before you send, it tells you roughly how many tokens the next turn will feed in; after the turn ends, it reconciles with provider-reported actuals.
 
-![tokprev in action](./docs/assets/tokprev.png)
+![tokprev in action](./docs/assets/tokprev-en.png)
 
-Note: on-screen labels are currently Chinese-only; the examples below translate what they mean.
+Note: the badges below are annotated on the English UI; the copy labels are translated by the host locale service.
 
 ### Pre-send preview (below the Composer)
 
@@ -63,6 +63,8 @@ UI slots `conversation.composer.dock` and `conversation.chat.assistant-actions`;
 ## tokstats
 
 Cross-session token consumption stats: the host's StatsLine only sees one session; this plugin scans every durable session log to answer "how much did I burn today", "which project eats the most", "how often do I run long contexts".
+
+![tokstats panel](./docs/assets/tokstats-en.png)
 
 A "Token 统计" button at the sidebar footer (an icon seat in rail mode) opens a popover panel:
 
@@ -158,7 +160,7 @@ Push and it's installable — no registry needed. The `files` field keeps git in
        plugin: xxx
    ```
 
-3. Write a `SPEC-xxx.md` decision record;
+3. Keep a local decision record for that plugin (not shipped with the repo, for maintainers to look back on);
 4. Restart the process. **Zero install operations.**
 
 Four hard constraints of the multi-plugin structure (from DSH itself — read before changing):
@@ -168,7 +170,7 @@ Four hard constraints of the multi-plugin structure (from DSH itself — read be
 - **Host gets one fiber per row; the client gets one fiber per package**: each patch row creates a **host** fiber, and `config.plugin` is a host-plane dispatch key (dsh-base's `tool-subagent` / `tool-subagent-fork` is the same-name multi-row reference). This pack's `lib/index.js` dispatches `apply(ctx, config)` on that key: pure-UI plugins have empty host halves (rows act as presence / disable anchors), while tokstats's aggregator rides the `tokstats` row's fiber (row disabled = stats stop). The **client-side `__DSH_BOOT__` manifest creates ONE entry per package with no config** (`dsh-client-modules` builds its boot graph keyed by package name), so `lib/client.js`'s apply registers ALL `PLUGINS` entries unconditionally and components return null when their data is missing. There is no "second row runs apply again" client-side, and dispatching by `config.plugin` in the client is impossible. The host half has an extra module-graph constraint: under pnpm link installs the plugin's real path sits outside the host's node_modules tree, so **npm-package imports don't resolve** — `lib/index.js` uses only `node:` builtins plus the `apply(ctx, config)` arguments, importing no cordis/zod runtime dependency.
 - **Styles are tagged per plugin**: give each plugin its own `data-plugin-css="dsh-plugins/<id>"` tag (`ensurePluginStyles` idempotent insert, removed when the pack fiber stops); this keeps per-plugin granularity so a plugin split out into its own package later takes its styles along verbatim.
 
-Outgrown the pack and want independent releases / a separate repo? Copy the registration block plus the patch row into a new package (the model is in the local SPEC-tokprev §11).
+Outgrown the pack and want independent releases / a separate repo? Copy the registration block plus the patch row into a new package (see how the existing plugins in this repo are implemented and packaged).
 
 ## Maintenance notes
 
