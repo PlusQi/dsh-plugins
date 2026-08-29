@@ -22,7 +22,7 @@ function setupClient(opts) {
 	const base = setupClientBase(opts);
 	const button = base.componentOf("sidebar.footer.action");
 	assert.ok(button, "应注册 sidebar.footer.action");
-	return { ...base, button };
+	return { ...base, button, t: base.t(NS) };
 }
 
 /** 渲染按钮（含 effects 执行 + 一次重渲以反映 setAnchor），返回第二次树。 */
@@ -61,6 +61,8 @@ function makeValue() {
 	};
 }
 
+const NS = "dsh-plugins.tokstats";
+
 const useSessionsOf = (snapshot) => (selector) => selector(snapshot);
 
 // ── 模块 / 注册 ────────────────────────────────────────────────────────────
@@ -88,15 +90,15 @@ test("样式回归：面板必须 position:fixed（否则被侧栏列 overflow:h
 });
 
 test("按钮 wide 形态：图标 + 文字标签；rail 形态仅图标", () => {
-	const { react, button } = setupClient();
+	const { react, button, t } = setupClient();
 	const snap = { current: undefined, ids: [], byId: {} };
-	const wideTree = renderDeep(react, renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap) }));
+	const wideTree = renderDeep(react, renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) }));
 	const wideNodes = nodesOf(wideTree);
 	assert.ok(wideNodes.some((n) => n.type === "svg"), "wide 有图标");
 	assert.ok(wideNodes.some((n) => n.props.className === "dsh-tokstats-triggerLabel" && textOf(n) === "Token 统计"), "wide 有文字标签");
 	assert.ok(wideTree.props.className.includes("dsh-tokstats-root") && !wideTree.props.className.includes("dsh-tokstats-rail"));
 
-	const railTree = renderDeep(react, renderButton(react, button, { wide: false, useSessions: useSessionsOf(snap) }));
+	const railTree = renderDeep(react, renderButton(react, button, { wide: false, t, useSessions: useSessionsOf(snap) }));
 	assert.ok(railTree.props.className.includes("dsh-tokstats-rail"));
 	assert.ok(!nodesOf(railTree).some((n) => n.props.className === "dsh-tokstats-triggerLabel"), "rail 无文字标签");
 	assert.equal(panelComponentOf(railTree), undefined, "无值时不渲染面板");
@@ -105,10 +107,10 @@ test("按钮 wide 形态：图标 + 文字标签；rail 形态仅图标", () => 
 // ── 面板渲染 ───────────────────────────────────────────────────────────────
 
 test("面板四表：总览三行 / 工作区 / 模型（含成本与未配价）/ 上下文桶 + 时间开关 + 估算脚注", () => {
-	const { react, button } = setupClient({ initialStates: [true] });
+	const { react, button, t } = setupClient({ initialStates: [true] });
 	const value = makeValue();
 	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: value } } } };
-	const tree = renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap) });
+	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
 	assert.ok(panelComponentOf(tree), "open=true 且有值时应渲染面板");
 	// 深渲染前清空按钮占用的 state 槽：Panel 的 range useState 从默认 "total" 开始。
 	react.clearStates();
@@ -149,10 +151,10 @@ test("面板四表：总览三行 / 工作区 / 模型（含成本与未配价�
 });
 
 test("时间开关过滤：range=today 时旧日期 cell 被过滤（工作区仅 alpha）", () => {
-	const { react, button } = setupClient({ initialStates: [true] });
+	const { react, button, t } = setupClient({ initialStates: [true] });
 	const value = makeValue();
 	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: value } } } };
-	const tree = renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap) });
+	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
 	react.clearStates();
 	react.initialStates = ["today"];
 	const panelTree = renderDeep(react, tree);
@@ -165,27 +167,27 @@ test("时间开关过滤：range=today 时旧日期 cell 被过滤（工作区�
 });
 
 test("空态：complete=false 显示统计中；complete=true 空 cells 显示暂无数据", () => {
-	const { react, button } = setupClient({ initialStates: [true] });
+	const { react, button, t } = setupClient({ initialStates: [true] });
 	const scanning = { ...makeValue(), complete: false, cells: [] };
 	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: scanning } } } };
-	const tree1 = renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap) });
+	const tree1 = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
 	react.clearStates();
 	react.initialStates = [];
 	assert.ok(textOf(renderDeep(react, tree1)).includes("统计中"), "统计中角标/空态");
 
 	const empty = { ...makeValue(), cells: [] };
 	const snap2 = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: empty } } } };
-	const tree2 = renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap2) });
+	const tree2 = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap2) });
 	react.clearStates();
 	react.initialStates = [];
 	assert.ok(textOf(renderDeep(react, tree2)).includes("暂无数据"), "完成态空数据显示暂无");
 });
 
 test("空态：reason=no-persistence 显示持久化不可用提示", () => {
-	const { react, button } = setupClient({ initialStates: [true] });
+	const { react, button, t } = setupClient({ initialStates: [true] });
 	const noPersistence = { ...makeValue(), reason: "no-persistence", cells: [] };
 	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: noPersistence } } } };
-	const tree = renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap) });
+	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
 	react.clearStates();
 	react.initialStates = [];
 	assert.ok(textOf(renderDeep(react, tree)).includes("持久化服务不可用"));
@@ -194,27 +196,114 @@ test("空态：reason=no-persistence 显示持久化不可用提示", () => {
 // ── projection 值选择（selectTokstatsValue 语义） ──────────────────────────
 
 test("值选择：当前会话优先于列表行兜底", () => {
-	const { react, button } = setupClient({ initialStates: [true] });
+	const { react, button, t } = setupClient({ initialStates: [true] });
 	const v1 = makeValue();
 	const v2 = makeValue();
 	v2.cells = [{ w: W_B, p: "p2", m: "m2", d: TODAY, b: 3, calls: 9, in: 999999, cr: 0, cw: 0, out: 9 }];
 	const snap = { current: "s1", ids: ["s1", "s2"], byId: { s1: { projectionValues: { tokstats: v1 } }, s2: { projectionValues: { tokstats: v2 } } } };
-	const tree = renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap) });
+	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
 	assert.equal(panelComponentOf(tree).props.value, v1, "当前会话的值优先");
 });
 
 test("值选择：当前会话无值时回落任一列表行", () => {
-	const { react, button } = setupClient({ initialStates: [true] });
+	const { react, button, t } = setupClient({ initialStates: [true] });
 	const v2 = makeValue();
 	const snap = { current: "s1", ids: ["s1", "s2"], byId: { s1: { projectionValues: {} }, s2: { projectionValues: { tokstats: v2 } } } };
-	const tree = renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap) });
+	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
 	assert.equal(panelComponentOf(tree).props.value, v2, "回落 ids[0] 的值");
 });
 
 test("值选择：全部缺席时按钮渲染但无面板（不抛错）", () => {
-	const { react, button } = setupClient({ initialStates: [true] });
+	const { react, button, t } = setupClient({ initialStates: [true] });
 	const snap = { current: "s1", ids: ["s1"], byId: { s1: {} } };
-	const tree = renderButton(react, button, { wide: true, useSessions: useSessionsOf(snap) });
+	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
 	assert.ok(nodesOf(tree).some((n) => n.type === "button"), "按钮仍渲染");
 	assert.equal(panelComponentOf(tree), undefined, "值缺席不渲染面板");
+});
+
+// ── 词典与语言切换 ────────────────────────────────────────────────────────
+
+test("词典：zh/en 键集完全一致（英文缺键会在界面上显示裸键）", () => {
+	const { dicts } = setupClient();
+	assertDictPair(assert, NS, dicts);
+});
+
+test("注册：sidebar.footer.action 声明 locale 命名空间（t 席位靠它注入）", () => {
+	const { registrations } = setupClient();
+	assert.equal(registrations.find((r) => r.opts.id === "tokstats-panel").opts.locale, NS);
+});
+
+test("面板英文：分区标题 / 时间开关 / 行值 / 未配价 / 脚注全走英文模板", () => {
+	const { react, button, t } = setupClient({ initialStates: [true], locale: "en" });
+	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: makeValue() } } } };
+	const tree = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap) });
+	react.clearStates();
+	react.initialStates = [];
+	const panelTree = renderDeep(react, tree);
+	const rows = rowNodesOf(panelTree);
+	const rowTexts = rows.map((r) => textOf(r));
+
+	const switches = nodesOf(panelTree).filter((n) => n.type === "button" && typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-switch"));
+	assert.deepEqual(switches.map((s) => textOf(s)), ["Today", "This week", "All time"]);
+
+	// 总览：累计 4 次输入 205K / 今日 3 次输入 201K，且不含金额
+	assert.ok(rowTexts.some((x) => x.startsWith("All time") && x.includes("4 calls") && x.includes("205K")), "All time 行");
+	assert.ok(rowTexts.some((x) => x.startsWith("Today") && x.includes("3 calls") && x.includes("201K")), "Today 行");
+	assert.ok(rowTexts.filter((x) => /^(Today|This week|All time)/.test(x)).every((x) => !x.includes("¥")), "总览行不含金额");
+
+	// 工作区与模型：英文语序（in / out 在前）
+	assert.ok(rows.some((r) => textOf(r).includes("alpha") && textOf(r).includes("201K in") && textOf(r).includes("250 out")), "alpha 行");
+	assert.ok(rows.some((r) => textOf(r).startsWith("deepseek-official/deepseek-v4-flash") && textOf(r).includes("210 out") && textOf(r).includes("¥0.017")), "官方模型行含估算成本");
+	assert.ok(rows.some((r) => textOf(r).startsWith("third-party-x/some-model") && textOf(r).includes("50 out") && textOf(r).includes("no price")), "未配价模型行");
+
+	// 桶表：命中率措辞为 cached
+	assert.ok(rowTexts.some((x) => x.startsWith("[0,4K)") && x.includes("2 calls") && x.includes("4.0K in") && x.includes("200 out") && x.includes("75% cached")), "桶 0 行");
+
+	// 脚注：估算标注 + 固定 24 小时制时钟（不跟浏览器 locale）
+	assert.match(textOf(panelTree), /generated at \d{2}:\d{2}:\d{2}/, "脚注时间与语言无关");
+});
+
+test("英文：复数分形（1 call / 2 calls）落在桶行上", () => {
+	const { react, button, t } = setupClient({ initialStates: [true], locale: "en" });
+	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: makeValue() } } } };
+	const tree = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap) });
+	react.clearStates();
+	react.initialStates = [];
+	const texts = rowNodesOf(renderDeep(react, tree)).map((r) => textOf(r));
+	// cell1 桶 0 两次调用；cell3 桶 1 一次调用
+	assert.ok(texts.some((x) => x.startsWith("[0,4K)") && x.includes("2 calls")), "桶 0 复数");
+	assert.ok(texts.some((x) => x.startsWith("[4K,8K)") && x.includes("1 call") && !x.includes("1 calls")), "桶 1 单数");
+});
+
+test("面板英文：空态与扫描中", () => {
+	const { react, button, t } = setupClient({ initialStates: [true], locale: "en" });
+	const scanning = { ...makeValue(), complete: false, cells: [] };
+	const snap1 = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: scanning } } } };
+	const tree1 = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap1) });
+	react.clearStates();
+	react.initialStates = [];
+	assert.ok(textOf(renderDeep(react, tree1)).includes("Scanning"), "扫描中角标");
+
+	const empty = { ...makeValue(), cells: [] };
+	const snap2 = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: empty } } } };
+	const tree2 = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap2) });
+	react.clearStates();
+	react.initialStates = [];
+	assert.ok(textOf(renderDeep(react, tree2)).includes("No data yet"), "完成态空数据");
+
+	const noPersistence = { ...makeValue(), reason: "no-persistence", cells: [] };
+	const snap3 = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: noPersistence } } } };
+	const tree3 = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap3) });
+	react.clearStates();
+	react.initialStates = [];
+	assert.ok(textOf(renderDeep(react, tree3)).includes("Persistence unavailable"), "持久化不可用");
+});
+
+test("按钮英文：wide 标签与 aria 走词典", () => {
+	const { react, button, t } = setupClient({ locale: "en" });
+	const snap = { current: undefined, ids: [], byId: {} };
+	const tree = renderDeep(react, renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap) }));
+	assert.ok(nodesOf(tree).some((n) => n.props.className === "dsh-tokstats-triggerLabel" && textOf(n) === "Token stats"), "英文标签");
+	const trigger = nodesOf(tree).find((n) => n.type === "button");
+	assert.equal(trigger.props["aria-label"], "Cross-session token statistics");
 });
