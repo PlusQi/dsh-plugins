@@ -14,6 +14,15 @@ One repo = one profile bundle: all plugins live in a single pack — adding a pl
 
 > As of v0.2.4 this pack is **mixed**: tokprev is pure browser UI; tokstats ships a host half (scans durable session logs, incremental checkpoint, publishes via the projection channel).
 
+## Language (Chinese / English)
+
+Both plugins render their copy through the host locale service and **follow DSH Settings → General → Language**; the pack itself has no language switch.
+
+- Dictionaries are namespaced per plugin — `dsh-plugins.tokprev` and `dsh-plugins.tokstats` — registered by `lib/client.js`'s apply (zh is the key-set source of truth; en must match key for key, asserted bidirectionally by the tests).
+- With no explicit choice the host falls back to the browser language, and to en when it is neither zh nor en.
+- `locale` is a **hard dependency** (as in official UI packs): when the host has no locale service (or it is disabled by hand), the whole bundle does not load — the UI disappears with no log line, rather than showing half-translated copy.
+- Number notation (1.2K / 3.4M), context bucket ranges (`[0,4K)`) and the ¥ sign are not translated (they read the same in English, and ¥ is DeepSeek's official RMB pricing — CNY would mislead); the panel footer clock is fixed 24-hour, independent of the browser locale.
+
 ## tokprev
 
 A closed loop for per-turn token consumption: before you send, it tells you roughly how many tokens the next turn will feed in; after the turn ends, it reconciles with provider-reported actuals.
@@ -164,7 +173,7 @@ Outgrown the pack and want independent releases / a separate repo? Copy the regi
 ## Maintenance notes
 
 - **No build step**: `lib/client.js` is the shipped artifact (plain JS, no TS/JSX; React is injected by the ModuleLoader). Changes = edit + restart. The host half `lib/index.js` is likewise plain JS: it imports only `node:` builtins (fs/os/path), no npm runtime dependency.
-- **Compatibility surface**: tokprev depends on UI slot contracts (`conversation.composer.dock`, `conversation.chat.assistant-actions`) and projection fields (`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`); tokstats depends on the `sidebar.footer.action` slot (root scope — standard seats are only `useSessions`/`useWorkspaces`; the projection value is read from the session-list snapshot's `projectionValues`), host services `ctx.sessionPersistence` (`listSnapshots`/`inspect`/`readStoredRevision`) and `ctx.sessionProjections` (registers the `tokstats` unit), and the `session/flush` event. If a plugin vanishes after a DSH upgrade, check these contracts first. Every read path degrades gracefully (renders null when data is missing, never throws).
+- **Compatibility surface**: tokprev depends on UI slot contracts (`conversation.composer.dock`, `conversation.chat.assistant-actions`) and projection fields (`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`); tokstats depends on the `sidebar.footer.action` slot (root scope — standard seats are only `useSessions`/`useWorkspaces`; the projection value is read from the session-list snapshot's `projectionValues`), host services `ctx.sessionPersistence` (`listSnapshots`/`inspect`/`readStoredRevision`) and `ctx.sessionProjections` (registers the `tokstats` unit), and the `session/flush` event. Interface copy additionally depends on the client service `ctx.locale` (dictionary registration + the `locale` namespace declared on slot registrations to obtain the `t` seat) — a hard dependency: without it the whole bundle does not load. If a plugin vanishes after a DSH upgrade, check these contracts first. Every read path degrades gracefully (renders null when data is missing, never throws).
 - **Developed against**: DSH `@deepseek-ai/dsh 0.1.1-rc.2`.
 - **Dev loop**: prototype live in a session with dynamic Cordis plugins (`cordis_define` -> `cordis_run`) first, then land it in this pack once satisfied.
 

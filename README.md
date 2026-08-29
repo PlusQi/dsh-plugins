@@ -14,6 +14,15 @@
 
 > 本包从 v0.2.4 起是**混合包**：tokprev 是纯浏览器 UI；tokstats 含 host 半边实现（扫 durable 会话日志聚合、checkpoint 增量、projection 下发）。
 
+## 语言（中文 / English）
+
+两个插件的界面文案都走宿主 locale 服务，**跟随 DSH 设置 → 常规 → Language**，插件自身没有语言开关。
+
+- 词典按插件划分命名空间：`dsh-plugins.tokprev` 与 `dsh-plugins.tokstats`，由 `lib/client.js` 的 apply 注册（zh 为键集真源，en 必须逐键对应，测试双向断言）。
+- 用户没显式选过时，宿主取浏览器语言；非 zh/en 回落 en。
+- `locale` 是本包的**硬依赖**（与官方 UI 包一致）：宿主没有 locale 服务（或被手动禁用）时整包不加载——表现为插件 UI 消失且无日志，而不是半中半英。
+- 数字记号（1.2K / 3.4M）、上下文桶区间（`[0,4K)`）与金额符号 ¥ 不翻译（英文语境同样通用，且 ¥ 是 DeepSeek 官方人民币价，写成 CNY 反而误导）；面板脚注时间固定 24 小时制，不跟浏览器 locale。
+
 ## tokprev 用途说明
 
 单轮 token 消耗的"事前预告 + 事后实报"闭环：发送前告诉你这一轮大概要喂多少 token，轮次结束后用提供商上报的真数对账。
@@ -166,7 +175,7 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 > 维护者与 AI Agent 的执行入口见 [AGENTS.md](./AGENTS.md)（路由表 + 硬规则 + 结构 guard）；本节为人类可读的详述。
 
 - **无构建步骤**：`lib/client.js` 即最终产物（纯 JS，不用 TS/JSX，React 经 ModuleLoader 注入）。改动 = 编辑 + 重启。`lib/index.js`（host 半边）同为纯 JS：只 import `node:` 内建（fs/os/path），不引 npm 运行时依赖。
-- **兼容面**：tokprev 依赖 UI slot 契约（`conversation.composer.dock`、`conversation.chat.assistant-actions`）与投影字段（`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`）；tokstats 依赖 slot `sidebar.footer.action`（root scope，标准位仅 `useSessions`/`useWorkspaces`，projection 值从会话列表快照的 `projectionValues` 读）、host 侧服务 `ctx.sessionPersistence`（`listSnapshots`/`inspect`/`readStoredRevision`）与 `ctx.sessionProjections`（注册 `tokstats` unit）、事件 `session/flush`。DSH 升级后若插件消失，先对照这些契约。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
+- **兼容面**：tokprev 依赖 UI slot 契约（`conversation.composer.dock`、`conversation.chat.assistant-actions`）与投影字段（`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`）；tokstats 依赖 slot `sidebar.footer.action`（root scope，标准位仅 `useSessions`/`useWorkspaces`，projection 值从会话列表快照的 `projectionValues` 读）、host 侧服务 `ctx.sessionPersistence`（`listSnapshots`/`inspect`/`readStoredRevision`）与 `ctx.sessionProjections`（注册 `tokstats` unit）、事件 `session/flush`；界面文案另依赖客户端服务 `ctx.locale`（注册词典 + slot 注册声明 `locale` 命名空间取得 `t` 席位）——它是硬依赖，缺席时整包不加载。DSH 升级后若插件消失，先对照这些契约。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
 - **开发所对版本**：DSH `@deepseek-ai/dsh 0.1.1-rc.2`。
 - **开发循环**：先用动态 Cordis 插件（`cordis_define` -> `cordis_run`）在会话内热迭代原型，满意后落入本包。
 
