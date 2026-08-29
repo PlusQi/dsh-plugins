@@ -2,6 +2,26 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
 
+## [0.4.0] - 2026-08-29
+
+> **破坏性变更**：本版本新增对宿主 `locale` 服务的硬依赖——用户 profile 的 `locale` 行缺席或被 `disabled` 时，整个 bundle 不再加载（插件 UI 消失且无日志）；此前该情形下插件仍以硬编码中文正常显示。0.x 阶段按 Semver §4 以 MINOR 承载，故版本号不跳 1.0.0。
+
+### Added
+
+- **中英文双语界面**：两个插件的全部可见文案（含 tooltip 与 aria-label）走宿主 locale 服务，跟随 DSH「设置 → 常规 → Language」切换，插件自身不带语言开关。
+  - 词典按插件划分命名空间 `dsh-plugins.tokprev` / `dsh-plugins.tokstats`，zh 为键集真源、en 逐键对应；文案一律改为 `{name}` 占位符整句模板，英文按英文语序重写（原拼接串直译会产出中英语序混用的半吊子文案）；
+  - 带计数的文案按 `.one` / `.other` 成对出键，英文正确区分单复数（`1 call` / `2 calls`）；
+  - tokprev 补齐了此前缺失的 client 测试（11 条），中英各断言一遍预告行与徽标。
+
+### Changed
+
+- **新增对宿主 `locale` 服务的硬依赖**（`inject` 加 `locale`，与官方 UI 包一致）：宿主没有 locale 服务或被手动禁用时，整包不加载——表现为插件 UI 消失且无日志，而不是半中半英。三个 slot 注册均声明 `locale` 命名空间以取得 `t` 席位。
+- **面板脚注时间由 `toLocaleTimeString()` 改为固定 24 小时制 `HH:mm:ss`**：`t` 席位只给翻译函数、不给当前语言 id，跟随浏览器 locale 会与 dsh 的语言偏好打架（中文界面配英文浏览器会显示英文时间格式）。数字记号（1.2K / 3.4M）、上下文桶区间与金额符号 ¥ 不翻译。
+
+### Fixed
+
+- 面板内 `t` 与局部变量撞名（`overviewRow` 的 period 与桶表 `map` 参数都叫 `t`），词典化后会把翻译函数遮蔽。
+
 ## [0.3.0] - 2026-08-28
 
 ### Added
