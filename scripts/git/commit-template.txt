@@ -1,0 +1,21 @@
+# <type>(<scope>): <subject>
+# <空行>
+# - 动机 / 取舍块一
+# <空行>
+# - 动机 / 取舍块二
+# <空行>
+# BREAKING CHANGE: <描述>
+#
+# 以上 # 开头的行不会进入提交信息（编辑器提交时由 git 剥除）。
+#
+# type（必填）: feat fix docs style refactor perf test build ci chore revert
+# scope（可选）: 插件名（tokprev / tokstats / …） | pack（包级设施与分发框架）
+#              | repo（AGENTS.md / hooks / guard 脚本） | 跨模块或纯性质类可省略
+# subject: ≤72 字符，祈使句、小写开头、结尾无句号，只讲 what
+# body: 只写动机与取舍，不重复 diff；每块以 "- " 开头、续行缩进两空格、块间空一行
+#       非混合提交不写验证结果（每类变更的最低验证见 AGENTS.md「按变更范围读取」表）
+# footer: BREAKING CHANGE（破坏性，触发 MAJOR）
+#        | Closes #123 / Fixes #456 / Refs #789
+#        | Policy-Exception: <原因> -- <说明>（仅混合提交；body 列验证方式时必带）
+# 硬约束: 一个提交一个意图；行为变化不许伪装成 docs: / chore:
+# 详见 AGENTS.md「Git 提交规范」

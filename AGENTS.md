@@ -126,7 +126,10 @@ scope 可省略：跨多模块或纯性质类提交（如 `docs: 修正错别字
 
 ```powershell
 git config core.hooksPath scripts/git/hooks
+git config commit.template scripts/git/commit-template.txt
 ```
+
+提交模板是骨架的兜底提醒：`git commit`（不带 `-m`）时编辑器自动带出 type / scope / body 格式要点，不必回翻本文件。模板全是注释行，编辑器提交时由 git 剥除，不会进提交信息。
 
 
 ## 交付信息
