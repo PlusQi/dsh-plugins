@@ -96,7 +96,7 @@ scope 可省略：跨多模块或纯性质类提交（如 `docs: 修正错别字
 **body / footer 约定**：
 
 - subject 与 body 之间空一行；
-- body 写动机与取舍（为什么这么做），不重复 diff 内容；
+- body 写动机与取舍（为什么这么做），不重复 diff 内容；每块以 `- ` 开头、续行缩进两空格、块间空一行——裸段落堆在一起时扫读分不出有几条动机、哪几句在讲取舍，加前缀后块数一眼可数；
 - 混合提交（约束 3）在 body 分行列出各部分及其验证方式，并用 footer 的 `Policy-Exception: <原因>` 标记——`commit-msg` 只允许带该标记的 body 出现「验证：」行。非混合提交不写验证结果：每类变更的最低验证见「按变更范围读取」表，逐提交复述即噪音。包级改动（`pack`）与插件级改动同批时尤其要列清，例如：`分发框架：lib/index.js apply 分发；插件 patch 行：cordis.patch.yml；测试入口：test/*.test.mjs`。
 - 关联 issue 用 footer：`Closes #123` / `Fixes #456`（自动关闭）、`Refs #789`（仅引用）。
 - 例外标记：`Policy-Exception: <原因> -- <无法拆分/验证的说明>`，一条提交至多一条，理由为空视为无豁免。
