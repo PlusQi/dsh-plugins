@@ -30,7 +30,7 @@ for (const [i, line] of patchText.split(/\r?\n/).entries()) {
 // ── 提取 lib/client.js 的 PLUGINS 注册表键 ──
 const clientPath = join(root, "lib", "client.js");
 const clientText = readFileSync(clientPath, "utf8");
-const registered = new Map(); // 键 -> { line, css, apply }
+const registered = new Map(); // 键 -> { css, apply, ns, dicts, nsNull }
 const pluginsBlock = clientText.match(/const PLUGINS = \{([\s\S]*?)\n\t+\};/);
 if (pluginsBlock === null) {
 	problems.push("lib/client.js: 找不到 `const PLUGINS = { ... }` 注册表 —— 客户端 apply 的唯一注册来源（硬规则 3），检查是否被误删或改名");
@@ -39,6 +39,9 @@ if (pluginsBlock === null) {
 		registered.set(m[1], {
 			css: /\bcss\b/.test(m[2]),
 			apply: /\bapply\b/.test(m[2]),
+			ns: /\bns\b/.test(m[2]),
+			dicts: /\bdicts\b/.test(m[2]),
+			nsNull: /\bns:\s*null\b/.test(m[2]),
 		});
 	}
 }
@@ -68,6 +71,11 @@ if (!clientText.includes('data-plugin-css="dsh-plugins/')) {
 for (const [key, meta] of registered) {
 	if (!meta.css || !meta.apply) {
 		problems.push(`lib/client.js PLUGINS.${key}: 注册块缺少 ${!meta.css ? "css" : "apply"} 字段 —— 客户端 apply 将注入 undefined（样式 tag 写入 'undefined' / 注册抛错跳过该插件）`);
+	}
+	// 硬规则 7 的静态兜底：新插件漏带词典时没有任何运行时报错（只是文案不翻译），
+	// 必须在这里拦。无 UI 文案的插件（纯 host 半边）显式写 ns: null 声明。
+	if (!meta.nsNull && (!meta.ns || !meta.dicts)) {
+		problems.push(`lib/client.js PLUGINS.${key}: 缺 ${!meta.ns ? "ns" : "dicts"} 字段 —— 硬规则 7 要求每插件自带词典（ns = "dsh-plugins.${key}"、dicts = { zh, en }）；该插件确无任何界面文案时显式写 ns: null`);
 	}
 }
 
