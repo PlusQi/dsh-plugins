@@ -143,7 +143,7 @@ git push -u origin master
 git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 ```
 
-**打 tag 前的硬门槛**（v0.2.0 三连败的教训，详见 [postmortem](./docs/debug/postmortem-v0.2.md)）：link 安装目标提交 -> 重启 dsh web -> 刷新页面，目检**每个插件**的 UI 元素实际渲染。"启动无报错 ≠ 插件正常工作"——slot 注册是副作用，apply 提前返回或抛错都可能静默失效。目检不过不打 tag。
+**打 tag 前的硬门槛**：link 安装目标提交 -> 重启 dsh web -> 刷新页面，目检**每个插件**的 UI 元素实际渲染。"启动无报错 ≠ 插件正常工作"——slot 注册是副作用，apply 提前返回或抛错都可能静默失效。目检不过不打 tag。
 
 推上去即可被安装，无需注册表。`files` 字段保证 git 安装只带
 `lib/` + `cordis.patch.yml`（pnpm 打包时自动附带 README / LICENSE / package.json）。
