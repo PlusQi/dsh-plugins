@@ -97,7 +97,7 @@ scope 可省略：跨多模块或纯性质类提交（如 `docs: 修正错别字
 
 - subject 与 body 之间空一行；
 - body 写动机与取舍（为什么这么做），不重复 diff 内容；
-- 混合提交（约束 3）在 body 分行列出各部分及其验证方式；包级改动（`pack`）与插件级改动同批时尤其要列清，例如：`分发框架：lib/index.js apply 分发；插件 patch 行：cordis.patch.yml；测试入口：test/*.test.mjs`。
+- 混合提交（约束 3）在 body 分行列出各部分及其验证方式，并用 footer 的 `Policy-Exception: <原因>` 标记——`commit-msg` 只允许带该标记的 body 出现「验证：」行。非混合提交不写验证结果：每类变更的最低验证见「按变更范围读取」表，逐提交复述即噪音。包级改动（`pack`）与插件级改动同批时尤其要列清，例如：`分发框架：lib/index.js apply 分发；插件 patch 行：cordis.patch.yml；测试入口：test/*.test.mjs`。
 - 关联 issue 用 footer：`Closes #123` / `Fixes #456`（自动关闭）、`Refs #789`（仅引用）。
 - 例外标记：`Policy-Exception: <原因> -- <无法拆分/验证的说明>`，一条提交至多一条，理由为空视为无豁免。
 
@@ -118,7 +118,7 @@ scope 可省略：跨多模块或纯性质类提交（如 `docs: 修正错别字
 
 | 时点 | 机制 | 拦什么 |
 | --- | --- | --- |
-| 提交时 | `commit-msg` hook | 空信息、非 `<type>(<scope>?): <摘要>` 格式、全角冒号、超长(72) |
+| 提交时 | `commit-msg` hook | 空信息、非 `<type>(<scope>?): <摘要>` 格式、全角冒号、超长(72)、body 出现「验证：」但无 `Policy-Exception` 声明 |
 | 推送时 | `pre-push` hook | 重跑结构 guard（覆盖 `--no-verify` 漏网提交） |
 
 注意（指南共识）：本地 hook 可被 `git push --no-verify` 绕过，本仓库单人维护无 CI，最终防线是规范自觉；merge / revert 自动提交直接放行。新 clone 启用方式：

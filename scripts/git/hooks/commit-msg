@@ -1,6 +1,6 @@
 #!/bin/sh
-# commit-msg guard：校验 subject 格式（AGENTS.md「Git 提交规范」，Conventional Commits 标准）。
-# 只拦格式与空信息，职责单一靠规范与评审（见 AGENTS.md）。
+# commit-msg guard：校验 subject 格式与 body 的验证段（AGENTS.md「Git 提交规范」，
+# Conventional Commits 标准）。只拦格式与这类明文违规，职责单一靠规范与评审。
 msg_file="$1"
 subject=$(head -n 1 "$msg_file")
 
@@ -37,4 +37,17 @@ fi
 if [ "$(printf '%s' "$subject" | wc -m)" -gt 72 ]; then
 	echo "[commit-msg] subject 超过 72 字符（当前 $(printf '%s' "$subject" | wc -m)），细节移入 body" >&2
 	exit 1
+fi
+
+# 验证结果只在混合提交（硬约束 3）才进 body，且必须用 Policy-Exception 声明；
+# 非混合提交按 AGENTS.md「按变更范围读取」表执行即可，逐提交复述是噪音。
+# 这条是散文约束失效后补的机器闸门：条件性规范（"只有…才…"）靠人回头复核
+# 容易漏——提交时约束成立、拆完提交后不成立，内容却被惯性留了下来。
+body=$(tail -n +3 "$msg_file")
+if printf '%s\n' "$body" | grep -qE '^验证[:：]'; then
+	if ! printf '%s\n' "$body" | grep -qE '^Policy-Exception: .+'; then
+		echo "[commit-msg] body 出现「验证：」行，但没用 'Policy-Exception: <原因>' 声明混合提交" >&2
+		echo "             验证结果只在混合提交（硬约束 3）才进 body；其余按 AGENTS.md「按变更范围读取」表执行" >&2
+		exit 1
+	fi
 fi
