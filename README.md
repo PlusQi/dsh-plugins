@@ -101,7 +101,7 @@ UI slot `conversation.composer.dock`、`conversation.chat.assistant-actions`；�
 
 在 composer 敲完草稿后，不必另开一轮「帮我优化这段提示词」：点 **优化提示词** 按钮，模型重写一遍，原文与优化文上下对照，**满意才点采纳**——采纳才把优化文写回输入框，不满意关掉即可，草稿原样不动。
 
-- **触发位置**：`conversation.composer.dock`（与 tokprev 预告行同带，在它下面）。
+- **触发位置**：`conversation.input.right`（composer 卡片**内部**工具行右端，模型选择座位之后、发送按钮之前）。v0.5.0 起初放在 `conversation.composer.dock`（与 tokprev 预告行同带），实际用起来发现 dock 是宿主契约标注的「环境读数带」、可点控件本就该在 tool row——v0.5.1 挪到 input.right 符合「发送前顺手点」的操作逻辑。
 - **流程**：点按钮（弹层出现、转圈）→ 模型返回（上下对照 + 耗时脚注）→ 采纳 / 关闭。关闭、Esc、点弹层外都算取消，会中止这次调用。
 - **禁用场景**（按钮置灰，悬浮有说明）：草稿为空；草稿含引用 chip、图片附件或 `/` 命令 token——写回是全量替换，模型重排会破坏引用坐标与图片归属，属于静默损坏，直接不让点。
 - **采纳语义**：以**发起时刻的草稿快照**为准，无条件写回。等待期间你又改了草稿，采纳会覆盖掉那些改动（没有二次确认弹层）。
@@ -117,7 +117,7 @@ UI slot `conversation.composer.dock`、`conversation.chat.assistant-actions`；�
 
 ### 依赖的宿主契约
 
-UI slot `conversation.composer.dock`；`InputActions.setDraft` 与 `InputState`（`draft` / `imageIds` / `occurrences` / `claim`）；客户端服务 `ctx.connection.rpc.call`；host 服务 `ctx.connection.rpc.handle`（`authority: "trusted-host"`）与 `ctx.llm`（`stream` / `listProviders` / `listModels`）。
+UI slot `conversation.input.right`（composer 卡片**内部**工具行）；`InputActions.setDraft` 与 `InputState`（`draft` / `imageIds` / `occurrences` / `claim`）；客户端服务 `ctx.connection.rpc.call`；host 服务 `ctx.connection.rpc.handle`（`authority: "trusted-host"`）与 `ctx.llm`（`stream` / `listProviders` / `listModels`）。
 
 DSH 升级后若按钮点了没反应或一直报错，先对照这些契约——尤其是 RPC 响应信封（成功必须是 `{ ok: true, value }`，错误码取自宿主闭集）与 `GenerateOptions` 的 `provider` / `model` 必填约束。
 
@@ -215,7 +215,7 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 > 维护者与 AI Agent 的执行入口见 [AGENTS.md](./AGENTS.md)（路由表 + 硬规则 + 结构 guard）；本节为人类可读的详述。
 
 - **无构建步骤**：`lib/client.js` 即最终产物（纯 JS，不用 TS/JSX，React 经 ModuleLoader 注入）。改动 = 编辑 + 重启。`lib/index.js`（host 半边）同为纯 JS：只 import `node:` 内建（fs/os/path），不引 npm 运行时依赖。
-- **兼容面**：tokprev 依赖 UI slot 契约（`conversation.composer.dock`、`conversation.chat.assistant-actions`）与投影字段（`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`）；tokstats 依赖 slot `sidebar.footer.action`（root scope，标准位仅 `useSessions`/`useWorkspaces`，projection 值从会话列表快照的 `projectionValues` 读）、host 侧服务 `ctx.sessionPersistence`（`listSnapshots`/`inspect`/`readStoredRevision`）与 `ctx.sessionProjections`（注册 `tokstats` unit）、事件 `session/flush`；promptopt 依赖 slot `conversation.composer.dock`、`InputActions.setDraft`、客户端 `ctx.connection.rpc.call`、host 侧 `ctx.connection.rpc.handle` 与 `ctx.llm`（契约明细见上节）；界面文案另依赖客户端服务 `ctx.locale`（注册词典 + slot 注册声明 `locale` 命名空间取得 `t` 席位）——它是硬依赖，缺席时整包不加载。DSH 升级后若插件消失，先对照这些契约。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
+- **兼容面**：tokprev 依赖 UI slot 契约（`conversation.composer.dock`、`conversation.chat.assistant-actions`）与投影字段（`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`）；tokstats 依赖 slot `sidebar.footer.action`（root scope，标准位仅 `useSessions`/`useWorkspaces`，projection 值从会话列表快照的 `projectionValues` 读）、host 侧服务 `ctx.sessionPersistence`（`listSnapshots`/`inspect`/`readStoredRevision`）与 `ctx.sessionProjections`（注册 `tokstats` unit）、事件 `session/flush`；promptopt 依赖 slot `conversation.input.right`、`InputActions.setDraft`、客户端 `ctx.connection.rpc.call`、host 侧 `ctx.connection.rpc.handle` 与 `ctx.llm`（契约明细见上节）；界面文案另依赖客户端服务 `ctx.locale`（注册词典 + slot 注册声明 `locale` 命名空间取得 `t` 席位）——它是硬依赖，缺席时整包不加载。DSH 升级后若插件消失，先对照这些契约。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
 - **开发所对版本**：DSH `@deepseek-ai/dsh 0.1.1-rc.2`。host 侧 RPC 与 LLM 契约是**一次性压三个深契约**（`InputActions` / `connection.rpc` / `llm.stream`），且 rc 阶段官方保留破坏权——升级后 promptopt 优先重验：信封形状（成功必须是 `{ ok: true, value }`，错误码取自宿主闭集）、`GenerateOptions` 的 `provider` / `model` 是否仍必填、`connection.rpc.handle` 的调用路径与 `options.authority` 是否仍存在。
 - **开发循环**：先用动态 Cordis 插件（`cordis_define` -> `cordis_run`）在会话内热迭代原型，满意后落入本包。
 - **开发循环**：先用动态 Cordis 插件（`cordis_define` -> `cordis_run`）在会话内热迭代原型，满意后落入本包。
