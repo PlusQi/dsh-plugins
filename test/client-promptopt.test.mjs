@@ -110,6 +110,21 @@ test("弹层锚定：视口过窄时钳到左缘，不让面板跑出屏幕", as
 
 // ── 按钮态机（三 fixture） ──────────────────────────────────────────────────
 
+test("纯图标位：不渲染文字标签，功能靠 title / aria-label 表达", () => {
+	const o = mount();
+	const tree = o.render();
+	// 工具行里其他按钮（引用 / 计划 / 模型选择）都是图标位，带文字会撑长这一行。
+	assert.equal(byClass(tree, "dsh-promptopt-triggerLabel"), undefined);
+	const trigger = byClass(tree, "dsh-promptopt-trigger");
+	// 纯图标按钮没有可读文本，无障碍名是必需项而不是可选项。
+	assert.equal(trigger.props["aria-label"], o.props.t("button.aria"));
+	// 默认草稿非空 → title 是功能说明；禁用原因的 title 由态机用例覆盖。
+	assert.equal(trigger.props.title, o.props.t("button.aria"));
+	// 词典里不该留不再渲染的死键（键集一致断言管不到「渲染了但没人用」）。
+	assert.equal(o.dicts[NS].zh["button.label"], undefined, "去掉文字标签后该键应一并删除");
+	assert.equal(o.dicts[NS].en["button.label"], undefined);
+});
+
 test("态机：纯文本草稿可点", () => {
 	const o = mount();
 	const trigger = byClass(o.render(), "dsh-promptopt-trigger");
