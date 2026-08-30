@@ -11,14 +11,16 @@ One repo = one profile bundle: all plugins live in a single pack — adding a pl
 | ----------- | ------------------------------------------------------------------------------------------------- |
 | **tokprev** | "Next-turn input preview" below the Composer (context + queued + draft, live as you type) + a real usage badge on each turn's closing message (provider-reported: input / cache / output / call count) |
 | **tokstats** | Sidebar-footer button + popover: cross-session token consumption stats (period overview / by workspace / by model with cost / context-length buckets, today · this week · total switch) |
+| **promptopt** | "Optimize prompt" button below the Composer: hand the draft to the model for a rewrite before sending, compare original vs. optimized, and **adopt** it into the input only if you like it |
 
-> As of v0.2.4 this pack is **mixed**: tokprev is pure browser UI; tokstats ships a host half (scans durable session logs, incremental checkpoint, publishes via the projection channel).
+> As of v0.2.4 this pack is **mixed**: tokprev is pure browser UI; tokstats and promptopt ship a host half (tokstats scans durable session logs with an incremental checkpoint and publishes via the projection channel; promptopt registers an RPC channel for one side-channel model call and keeps **no on-disk state**).
 
 ## Language (Chinese / English)
 
-Both plugins render their copy through the host locale service and **follow DSH Settings → General → Language**; the pack itself has no language switch.
+Plugins render their copy through the host locale service and **follow DSH Settings → General → Language**; the pack itself has no language switch.
 
-- Dictionaries are namespaced per plugin — `dsh-plugins.tokprev` and `dsh-plugins.tokstats` — registered by `lib/client.js`'s apply (zh is the key-set source of truth; en must match key for key, asserted bidirectionally by the tests).
+- Dictionaries are namespaced per plugin — `dsh-plugins.tokprev`, `dsh-plugins.tokstats` and `dsh-plugins.promptopt` — registered by `lib/client.js`'s apply (zh is the key-set source of truth; en must match key for key, asserted bidirectionally by the tests).
+- promptopt splits **two axes**: UI copy follows the host language, while the **rewritten prompt follows the draft's language** (a Chinese draft still comes back Chinese on an English UI) — the rewrite is content, not UI copy, so it never enters a dictionary.
 - With no explicit choice the host falls back to the browser language, and to en when it is neither zh nor en.
 - `locale` is a **hard dependency** (as in official UI packs): when the host has no locale service (or it is disabled by hand), the whole bundle does not load — the UI disappears with no log line, rather than showing half-translated copy.
 - Number notation (1.2K / 3.4M), context bucket ranges (`[0,4K)`) and the ¥ sign are not translated (they read the same in English, and ¥ is DeepSeek's official RMB pricing — CNY would mislead); the panel footer clock is fixed 24-hour, independent of the browser locale.
@@ -94,6 +96,30 @@ Built-in prices only cover the `deepseek-official` route. For third-party provid
 - Live sessions refold incrementally from the last seq after each flush; changes are checkpointed with a debounce;
 - Data flows through the `sessionProjections` channel (`tokstats` unit); right after first install the panel shows "统计中…" until some session is opened or a push arrives;
 - Fully degraded: missing persistence/projection services never throw — the panel explains.
+
+## promptopt
+
+After typing a draft you no longer need a separate "please optimize this prompt" turn: hit **Optimize prompt**, the model rewrites it, you compare original vs. optimized, and **adopt** it into the input only when you are happy. Close it and the draft is untouched.
+
+- **Where it lives**: `conversation.composer.dock` (same band as the tokprev preview line, below it).
+- **Flow**: click (popover opens, spinner) → result arrives (original vs. optimized + elapsed time) → adopt or close. Closing, Esc, and clicking outside all count as cancel and abort the in-flight call.
+- **Disabled** (greyed out, with a tooltip explaining why): the draft is empty, or it contains a reference chip, an image attachment, or a `/` command token — adopting is a full-text replacement, so a model reshuffle would break reference offsets and image ownership. That is silent corruption, so the button simply refuses.
+- **Adopt semantics**: the snapshot taken when you clicked wins, and it is written back unconditionally. If you edited the draft while waiting, adopting overwrites those edits (no confirmation dialog).
+- **Model and cost**: one **side-channel call** through the host's `ctx.llm`, riding the first registered provider/model route. **No configuration surface** and no API key of its own; each click is one model call (input on the order of 1.5x the draft).
+- **Nothing on disk**: no checkpoint, no session log — purely in-memory. This call is **not** counted by tokstats (it never lands in the durable session log).
+
+### Host-side behavior
+
+- Registers the RPC channel `/dsh-plugins.promptopt` (`ctx.connection.rpc.handle`, detached when this row's fiber unloads) with an `optimize` endpoint;
+- Takes `{ text }`, prepends the built-in meta-prompt, collects the full output from `ctx.llm.stream`, and returns `{ text, durationMs, usage? }`. Failures return **machine codes only** (`bad-request` / `model-unavailable` / `internal` / `cancelled`) and the browser half resolves them through its dictionary — the host has no locale service and never builds human-readable copy;
+- A 60s timeout as a second line of defense; an abort from the browser (closing the popover) cancels the call;
+- **Degrades**: when the `connection` or `llm` service is absent the channel is never registered and clicking shows "the model call failed" instead of a blank screen. `connection` is read lazily via `ctx.get` rather than `inject` — the latter is a hard dependency, and its absence would take tokprev and tokstats down with it.
+
+### Host contracts
+
+UI slot `conversation.composer.dock`; `InputActions.setDraft` and `InputState` (`draft` / `imageIds` / `occurrences` / `claim`); the client service `ctx.connection.rpc.call`; host services `ctx.connection.rpc.handle` (`authority: "trusted-host"`) and `ctx.llm` (`stream` / `listProviders` / `listModels`).
+
+If the button does nothing or always errors after a DSH upgrade, check these contracts first — above all the RPC response envelope (success must be `{ ok: true, value }`; error codes come from a host-side closed set) and the fact that `GenerateOptions.provider` / `.model` are both required.
 
 ## Installation (web profile)
 
@@ -187,8 +213,8 @@ Outgrown the pack and want independent releases / a separate repo? Copy the regi
 ## Maintenance notes
 
 - **No build step**: `lib/client.js` is the shipped artifact (plain JS, no TS/JSX; React is injected by the ModuleLoader). Changes = edit + restart. The host half `lib/index.js` is likewise plain JS: it imports only `node:` builtins (fs/os/path), no npm runtime dependency.
-- **Compatibility surface**: tokprev depends on UI slot contracts (`conversation.composer.dock`, `conversation.chat.assistant-actions`) and projection fields (`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`); tokstats depends on the `sidebar.footer.action` slot (root scope — standard seats are only `useSessions`/`useWorkspaces`; the projection value is read from the session-list snapshot's `projectionValues`), host services `ctx.sessionPersistence` (`listSnapshots`/`inspect`/`readStoredRevision`) and `ctx.sessionProjections` (registers the `tokstats` unit), and the `session/flush` event. Interface copy additionally depends on the client service `ctx.locale` (dictionary registration + the `locale` namespace declared on slot registrations to obtain the `t` seat) — a hard dependency: without it the whole bundle does not load. If a plugin vanishes after a DSH upgrade, check these contracts first. Every read path degrades gracefully (renders null when data is missing, never throws).
-- **Developed against**: DSH `@deepseek-ai/dsh 0.1.1-rc.2`.
+- **Compatibility surface**: tokprev depends on UI slot contracts (`conversation.composer.dock`, `conversation.chat.assistant-actions`) and projection fields (`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`); tokstats depends on the `sidebar.footer.action` slot (root scope — standard seats are only `useSessions`/`useWorkspaces`; the projection value is read from the session-list snapshot's `projectionValues`), host services `ctx.sessionPersistence` (`listSnapshots`/`inspect`/`readStoredRevision`) and `ctx.sessionProjections` (registers the `tokstats` unit), and the `session/flush` event; promptopt depends on the `conversation.composer.dock` slot, `InputActions.setDraft`, the client-side `ctx.connection.rpc.call`, and host services `ctx.connection.rpc.handle` / `ctx.llm` (details in its section above). Interface copy additionally depends on the client service `ctx.locale` (dictionary registration + the `locale` namespace declared on slot registrations to obtain the `t` seat) — a hard dependency: without it the whole bundle does not load. If a plugin vanishes after a DSH upgrade, check these contracts first. Every read path degrades gracefully (renders null when data is missing, never throws).
+- **Developed against**: DSH `@deepseek-ai/dsh 0.1.1-rc.2`. promptopt's host half leans on **three deep contracts at once** (`InputActions` / `connection.rpc` / `llm.stream`), and rc releases keep the right to break them — after any upgrade, re-verify promptopt first: the response envelope (success must be `{ ok: true, value }`; error codes come from a host-side closed set), whether `GenerateOptions.provider` / `.model` are still required, and whether `connection.rpc.handle`'s call path and `options.authority` still exist.
 - **Dev loop**: prototype live in a session with dynamic Cordis plugins (`cordis_define` -> `cordis_run`) first, then land it in this pack once satisfied.
 
 ## License

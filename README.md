@@ -11,14 +11,16 @@
 | ----------- | --------------------------------------------------------------------------------------- |
 | **tokprev** | Composer 底部"下一轮 token 输入预告"（上下文 + 排队 + 草稿，随打字实时跳动）+ 每轮收尾消息上的真实消耗徽标（提供商上报：输入/缓存/输出/调用次数） |
 | **tokstats** | 侧栏脚按钮弹层面板：跨会话 token 消耗统计（时间段总览 / 按工作区 / 按模型含成本 / 上下文长度分布，今日·本周·累计三档切换） |
+| **promptopt** | Composer 底部「优化提示词」按钮：发送前把草稿交给模型重写，原文/优化文对照，**采纳**才写回输入框 |
 
-> 本包从 v0.2.4 起是**混合包**：tokprev 是纯浏览器 UI；tokstats 含 host 半边实现（扫 durable 会话日志聚合、checkpoint 增量、projection 下发）。
+> 本包从 v0.2.4 起是**混合包**：tokprev 是纯浏览器 UI；tokstats 与 promptopt 含 host 半边实现（tokstats 扫 durable 会话日志聚合、checkpoint 增量、projection 下发；promptopt 注册 RPC 通道做一次旁路模型调用，**无磁盘状态**）。
 
 ## 语言（中文 / English）
 
-两个插件的界面文案都走宿主 locale 服务，**跟随 DSH 设置 → 常规 → Language**，插件自身没有语言开关。
+插件的界面文案都走宿主 locale 服务，**跟随 DSH 设置 → 常规 → Language**，插件自身没有语言开关。
 
-- 词典按插件划分命名空间：`dsh-plugins.tokprev` 与 `dsh-plugins.tokstats`，由 `lib/client.js` 的 apply 注册（zh 为键集真源，en 必须逐键对应，测试双向断言）。
+- 词典按插件划分命名空间：`dsh-plugins.tokprev`、`dsh-plugins.tokstats` 与 `dsh-plugins.promptopt`，由 `lib/client.js` 的 apply 注册（zh 为键集真源，en 必须逐键对应，测试双向断言）。
+- promptopt 是**两轴分离**：界面文案跟随宿主语言，而**优化产物跟随草稿语言**（英文界面照样出中文优化文）——优化文是内容、不是 UI 文案，不进词典。
 - 用户没显式选过时，宿主取浏览器语言；非 zh/en 回落 en。
 - `locale` 是本包的**硬依赖**（与官方 UI 包一致）：宿主没有 locale 服务（或被手动禁用）时整包不加载——表现为插件 UI 消失且无日志，而不是半中半英。
 - 数字记号（1.2K / 3.4M）、上下文桶区间（`[0,4K)`）与金额符号 ¥ 不翻译（英文语境同样通用，且 ¥ 是 DeepSeek 官方人民币价，写成 CNY 反而误导）；面板脚注时间固定 24 小时制，不跟浏览器 locale。
@@ -94,6 +96,30 @@ UI slot `conversation.composer.dock`、`conversation.chat.assistant-actions`；�
 - 活会话 flush 后从上次 seq 增量续折，变更防抖落盘；
 - 数据经 `sessionProjections` 通道（`tokstats` unit）下发；首次安装后需任一会话被打开或推送到达才有值（面板在此之前显示「统计中…」）；
 - 全链路降级：persistence/projection 缺席不抛错，面板显示对应提示。
+
+## promptopt 用途说明
+
+在 composer 敲完草稿后，不必另开一轮「帮我优化这段提示词」：点 **优化提示词** 按钮，模型重写一遍，原文与优化文上下对照，**满意才点采纳**——采纳才把优化文写回输入框，不满意关掉即可，草稿原样不动。
+
+- **触发位置**：`conversation.composer.dock`（与 tokprev 预告行同带，在它下面）。
+- **流程**：点按钮（弹层出现、转圈）→ 模型返回（上下对照 + 耗时脚注）→ 采纳 / 关闭。关闭、Esc、点弹层外都算取消，会中止这次调用。
+- **禁用场景**（按钮置灰，悬浮有说明）：草稿为空；草稿含引用 chip、图片附件或 `/` 命令 token——写回是全量替换，模型重排会破坏引用坐标与图片归属，属于静默损坏，直接不让点。
+- **采纳语义**：以**发起时刻的草稿快照**为准，无条件写回。等待期间你又改了草稿，采纳会覆盖掉那些改动（没有二次确认弹层）。
+- **模型与开销**：走宿主 `ctx.llm` 做一次**旁路调用**——骑当前已注册的第一个 provider/model 路由，**没有配置面**，也不新建 API key；每次点击 = 一次模型调用（输入约为草稿的 1.5 倍量级）。
+- **不落盘**：无 checkpoint、无会话日志，纯内存瞬时。这次旁路调用的开销**不会**计入 tokstats 的跨会话统计（它不在 durable 会话日志里）。
+
+### host 侧行为
+
+- 注册 RPC 通道 `/dsh-plugins.promptopt`（`ctx.connection.rpc.handle`，随本行 fiber 卸载即摘），端点 `optimize`；
+- 收 `{ text }` → 加内置 meta-prompt → `ctx.llm.stream` 收集完整输出 → 返回 `{ text, durationMs, usage? }`。错误只回机器码（`bad-request` / `model-unavailable` / `internal` / `cancelled`），由浏览器侧查词典渲染——host 侧没有 locale 服务，不拼人类可读文案；
+- 60s 双保险超时；浏览器 abort（关闭弹层）即中止这次调用；
+- **降级**：`connection` 或 `llm` 服务缺席时通道不注册，点按钮显示「模型调用失败」而不是白屏；`connection` 用 `ctx.get` 惰性取而不是 `inject`——后者是硬依赖，缺席会连带 tokprev / tokstats 一起不加载。
+
+### 依赖的宿主契约
+
+UI slot `conversation.composer.dock`；`InputActions.setDraft` 与 `InputState`（`draft` / `imageIds` / `occurrences` / `claim`）；客户端服务 `ctx.connection.rpc.call`；host 服务 `ctx.connection.rpc.handle`（`authority: "trusted-host"`）与 `ctx.llm`（`stream` / `listProviders` / `listModels`）。
+
+DSH 升级后若按钮点了没反应或一直报错，先对照这些契约——尤其是 RPC 响应信封（成功必须是 `{ ok: true, value }`，错误码取自宿主闭集）与 `GenerateOptions` 的 `provider` / `model` 必填约束。
 
 ## 安装（web profile）
 
@@ -189,8 +215,9 @@ git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
 > 维护者与 AI Agent 的执行入口见 [AGENTS.md](./AGENTS.md)（路由表 + 硬规则 + 结构 guard）；本节为人类可读的详述。
 
 - **无构建步骤**：`lib/client.js` 即最终产物（纯 JS，不用 TS/JSX，React 经 ModuleLoader 注入）。改动 = 编辑 + 重启。`lib/index.js`（host 半边）同为纯 JS：只 import `node:` 内建（fs/os/path），不引 npm 运行时依赖。
-- **兼容面**：tokprev 依赖 UI slot 契约（`conversation.composer.dock`、`conversation.chat.assistant-actions`）与投影字段（`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`）；tokstats 依赖 slot `sidebar.footer.action`（root scope，标准位仅 `useSessions`/`useWorkspaces`，projection 值从会话列表快照的 `projectionValues` 读）、host 侧服务 `ctx.sessionPersistence`（`listSnapshots`/`inspect`/`readStoredRevision`）与 `ctx.sessionProjections`（注册 `tokstats` unit）、事件 `session/flush`；界面文案另依赖客户端服务 `ctx.locale`（注册词典 + slot 注册声明 `locale` 命名空间取得 `t` 席位）——它是硬依赖，缺席时整包不加载。DSH 升级后若插件消失，先对照这些契约。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
-- **开发所对版本**：DSH `@deepseek-ai/dsh 0.1.1-rc.2`。
+- **兼容面**：tokprev 依赖 UI slot 契约（`conversation.composer.dock`、`conversation.chat.assistant-actions`）与投影字段（`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`）；tokstats 依赖 slot `sidebar.footer.action`（root scope，标准位仅 `useSessions`/`useWorkspaces`，projection 值从会话列表快照的 `projectionValues` 读）、host 侧服务 `ctx.sessionPersistence`（`listSnapshots`/`inspect`/`readStoredRevision`）与 `ctx.sessionProjections`（注册 `tokstats` unit）、事件 `session/flush`；promptopt 依赖 slot `conversation.composer.dock`、`InputActions.setDraft`、客户端 `ctx.connection.rpc.call`、host 侧 `ctx.connection.rpc.handle` 与 `ctx.llm`（契约明细见上节）；界面文案另依赖客户端服务 `ctx.locale`（注册词典 + slot 注册声明 `locale` 命名空间取得 `t` 席位）——它是硬依赖，缺席时整包不加载。DSH 升级后若插件消失，先对照这些契约。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
+- **开发所对版本**：DSH `@deepseek-ai/dsh 0.1.1-rc.2`。host 侧 RPC 与 LLM 契约是**一次性压三个深契约**（`InputActions` / `connection.rpc` / `llm.stream`），且 rc 阶段官方保留破坏权——升级后 promptopt 优先重验：信封形状（成功必须是 `{ ok: true, value }`，错误码取自宿主闭集）、`GenerateOptions` 的 `provider` / `model` 是否仍必填、`connection.rpc.handle` 的调用路径与 `options.authority` 是否仍存在。
+- **开发循环**：先用动态 Cordis 插件（`cordis_define` -> `cordis_run`）在会话内热迭代原型，满意后落入本包。
 - **开发循环**：先用动态 Cordis 插件（`cordis_define` -> `cordis_run`）在会话内热迭代原型，满意后落入本包。
 
 ## License

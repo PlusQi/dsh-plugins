@@ -2,6 +2,17 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
 
+## [Unreleased]
+
+### Added
+
+- **promptopt 插件**：composer 底部「优化提示词」按钮——点一下把草稿交给模型重写，原文/优化文上下对照，**采纳**才写回输入框；不采纳关掉即止，草稿原样不动。
+  - 走宿主 `ctx.llm` 做一次**旁路调用**（骑当前已注册的第一个 provider/model 路由），没有配置面、不新建 API key；无磁盘状态（无 checkpoint、无会话日志），该调用也不计入 tokstats 的跨会话统计；
+  - 草稿为空、含引用 chip / 图片附件 / `/` 命令 token 时按钮置灰——写回是全量替换，模型重排会静默破坏引用坐标与图片归属，索性不让点；
+  - 关闭 / Esc / 点弹层外都算取消，会中止这次调用（浏览器 abort 直接贯通到 host 的模型调用）；
+  - 采纳以**发起时刻的草稿快照**为准，无条件写回，等待期间的编辑会被覆盖（无二次确认）；
+  - 界面文案双语（新命名空间 `dsh-plugins.promptopt`），但**优化产物跟随草稿语言**——英文界面照样出中文优化文。
+
 ## [0.4.0] - 2026-08-29
 
 > **破坏性变更**：本版本新增对宿主 `locale` 服务的硬依赖——用户 profile 的 `locale` 行缺席或被 `disabled` 时，整个 bundle 不再加载（插件 UI 消失且无日志）；此前该情形下插件仍以硬编码中文正常显示。0.x 阶段按 Semver §4 以 MINOR 承载，故版本号不跳 1.0.0。
