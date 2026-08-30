@@ -32,3 +32,11 @@
       name: 'dsh-plugins'
       config:
         plugin: tokstats
+    # promptopt: composer dock 的「优化提示词」按钮 + 原文/优化文对照弹层。
+    # 宿主半边注册 RPC 通道 /dsh-plugins.promptopt，走 ctx.llm 做一次旁路
+    # 模型调用（骑已注册的第一个 provider/model 路由，无配置面）。通道随本行
+    # fiber 卸载即摘，禁用本行即整链路下线。
+    - id: promptopt
+      name: 'dsh-plugins'
+      config:
+        plugin: promptopt
