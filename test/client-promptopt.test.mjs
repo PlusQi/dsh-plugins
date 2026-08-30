@@ -18,7 +18,9 @@ import {
 } from "./client-harness.mjs";
 
 const NS = "dsh-plugins.promptopt";
-const SLOT = "conversation.composer.dock";
+// composer 卡片内部工具行的右端：模型选择座位之后、发送按钮之前。宿主契约
+// 给可点控件的位置——dock 是「环境读数带」，不该放可点控件。
+const SLOT = "conversation.input.right";
 const ID = "promptopt-button";
 
 /** 排空微任务：onClick 是 void run()，等 run() 的 await 链走完。 */
@@ -54,12 +56,12 @@ const byClass = (tree, cls) => nodesOf(tree).find((n) => n.props?.className === 
 
 // ── 注册与词典 ─────────────────────────────────────────────────────────────
 
-test("注册：dock 座位 + order 30 + locale 声明（t 席位靠 ns 取得）", () => {
+test("注册：input.right 座位 + order 30 + locale 声明（t 席位靠 ns 取得）", () => {
 	const { registrations } = setupClientBase();
 	const entry = registrations.find((r) => r.opts.id === ID);
 	assert.ok(entry);
 	assert.equal(entry.opts.name, SLOT);
-	assert.equal(entry.opts.order, 30, "避开 tokprev 的 20");
+	assert.equal(entry.opts.order, 30);
 	assert.equal(entry.opts.locale, NS, "声明 ns 才有 t 席位");
 });
 
@@ -68,12 +70,42 @@ test("词典：zh/en 键集一致（硬规则 7，缺键在英文界面会显示
 	assertDictPair(assert, NS, dicts);
 });
 
-test("样式：按插件分 tag 注入，弹层绝对定位挂在按钮上方（硬规则 4）", () => {
+test("样式：按插件分 tag 注入，弹层 fixed 定位（硬规则 4 + 防裁剪回归）", () => {
 	setupClientBase();
 	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/promptopt");
 	assert.ok(tag, "promptopt 应有自己的 style tag，不与其他插件共用");
-	assert.match(tag.textContent, /\.dsh-promptopt-panel\{[^}]*position:absolute/, "弹层是 absolute 而非 fixed：它锚在按钮上方，不跟视口");
+	// fixed 而非 absolute：座位在 composer 工具行里，absolute 会被祖先的
+	// overflow:hidden 裁剪（面板在 DOM 里存在但肉眼不可见——tokstats v0.3.0
+	// 踩过同一个坑，这条是防回归的）。
+	assert.match(tag.textContent, /\.dsh-promptopt-panel\{[^}]*position:fixed/);
 	assert.match(tag.textContent, /@keyframes dsh-promptopt-spin/, "pending 转圈要有动画定义");
+});
+
+test("弹层锚定：按按钮矩形算坐标（fixed 定位必须自带坐标）", async () => {
+	const rpc = makeRpcStub().hang();
+	const o = mount({ connection: { rpc } });
+	await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+	await settle();
+	const panel = byClass(o.render(), "dsh-promptopt-panel");
+	assert.ok(panel, "open 且锚点算出来后才有面板");
+	// 桩的 DOM ref 矩形是 {left:12, top:340}，视口 1280x800：
+	// left = max(8, min(12, 1280-420-12)) = 12；bottom = 800 - 340 + 8 = 468。
+	assert.deepEqual(panel.props.style, { left: 12, bottom: 468 });
+});
+
+test("弹层锚定：视口过窄时钳到左缘，不让面板跑出屏幕", async () => {
+	const original = window.innerWidth;
+	window.innerWidth = 300; // 比面板还窄：420+12 的余量算出负数，应钳到 8
+	try {
+		const rpc = makeRpcStub().hang();
+		const o = mount({ connection: { rpc } });
+		await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+		await settle();
+		const panel = byClass(o.render(), "dsh-promptopt-panel");
+		assert.equal(panel.props.style.left, 8);
+	} finally {
+		window.innerWidth = original;
+	}
 });
 
 // ── 按钮态机（三 fixture） ──────────────────────────────────────────────────

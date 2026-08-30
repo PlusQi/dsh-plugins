@@ -74,8 +74,8 @@ test("client 产物：导出 { inject: [slots, locale], apply }，apply 后注�
 	const names = registrations.map((r) => r.opts.name + "#" + r.opts.id).sort();
 	assert.deepEqual(names, [
 		"conversation.chat.assistant-actions#tok-turn-badge",
-		"conversation.composer.dock#promptopt-button",
 		"conversation.composer.dock#tok-preview",
+		"conversation.input.right#promptopt-button",
 		"sidebar.footer.action#tokstats-panel",
 	]);
 });
