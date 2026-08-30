@@ -124,6 +124,53 @@ export function renderWithEffects(react, comp, props) {
 	return tree;
 }
 
+// ── connection 桩（promptopt 的 RPC 通道） ─────────────────────────────────
+//
+// 宿主客户端半边提供 ctx.connection.rpc.call(channel, endpoint, payload,
+// signal)（dsh-client-connection/lib/client.js:10204 的 createWebConnectionRpc
+// + :10315 的 ctx.provide），自带 rpcId 关联、信封校验与 signal 透传。桩只需
+// 复刻这层接口：记录每次调用、行为可编程。
+//
+// abort 断言走 signal 而不去间谍 AbortController：组件自己 new 出来的控制器
+// 测试拿不到引用，而 signal 一定会被传进 call —— 断言 `signal.aborted` 比拦
+// 构造器更贴近真实可观察行为。
+
+/**
+ * 可编程 RPC caller 桩。默认返回一个成功结果，用 respond() 换行为。
+ * @returns 桩对象：calls 是调用记录；respond(fn) 设行为，fn 收 (call, signal)，
+ *   返回值为 result、抛异常即模拟传输失败（宿主 call 在 HTTP 非 2xx 时抛）。
+ */
+export function makeRpcStub() {
+	const calls = [];
+	let behavior = () => ({ ok: true, text: "stub-optimized" });
+	return {
+		calls,
+		respond(fn) { behavior = fn; return this; },
+		/** 挂起到 signal abort（模拟慢请求 + 取消）：reject 一个 AbortError。 */
+		hang() {
+			behavior = (call) => new Promise((_resolve, reject) => {
+				const signal = call.signal;
+				if (signal === undefined) throw new Error("hang 需要组件传入 signal 才能被中止");
+				if (signal.aborted) { reject(abortError()); return; }
+				signal.addEventListener("abort", () => reject(abortError()), { once: true });
+			});
+			return this;
+		},
+		async call(channel, endpoint, payload, signal) {
+			const call = { channel, endpoint, payload, signal };
+			calls.push(call);
+			return behavior(call, signal);
+		},
+	};
+}
+
+/** 与浏览器 fetch 一致的 abort 错误形态（name 是组件判定「用户取消」的依据）。 */
+export function abortError() {
+	const error = new Error("This operation was aborted");
+	error.name = "AbortError";
+	return error;
+}
+
 // ── locale 桩 ─────────────────────────────────────────────────────────────
 
 /**
@@ -143,8 +190,10 @@ function makeT(dicts, ns, active) {
 /**
  * factory(react) → apply(伪 ctx) → 返回注册记录、捕获到的真实词典与该语言的 t。
  * @param opts.locale 当前语言（"zh" | "en"），决定 bind 吐出的 t 走哪套字典。
+ * @param opts.connection connection 服务桩（makeRpcStub() 的宿主侧包装）。不传即
+ *   模拟「宿主无 connection 服务」，用来断言插件降级而不是整包挂掉。
  */
-export function setupClientBase({ initialStates, locale = "zh" } = {}) {
+export function setupClientBase({ initialStates, locale = "zh", connection } = {}) {
 	const react = makeReactMock({ initialStates });
 	const exportsObj = clientDef.factory(() => react);
 	const registrations = [];
@@ -155,6 +204,9 @@ export function setupClientBase({ initialStates, locale = "zh" } = {}) {
 			register: (opts, comp) => { registrations.push({ opts, comp }); return () => {}; },
 		},
 		effect: () => () => {},
+		// 硬规则 5 禁止 client 半边 inject 之外的取服务方式；connection 是可选
+		// 服务，用 ctx.get 惰性取（inject 会把它变成整包硬依赖）。
+		get: (name) => (name === "connection" ? connection : undefined),
 		locale: {
 			// 一个 ns 只有一个 owner：重复注册同 ns 要抛（与宿主实现一致，撞车是真失败）。
 			register: (ns, dict) => {
