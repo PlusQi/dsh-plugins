@@ -11,7 +11,7 @@ One repo = one profile bundle: all plugins live in a single pack — adding a pl
 | ----------- | ------------------------------------------------------------------------------------------------- |
 | **tokprev** | "Next-turn input preview" below the Composer (context + queued + draft, live as you type) + a real usage badge on each turn's closing message (provider-reported: input / cache / output / call count) |
 | **tokstats** | Sidebar-footer button + popover: cross-session token consumption stats (period overview / by workspace / by model with cost / context-length buckets, today · this week · total switch) |
-| **promptopt** | "Optimize prompt" button below the Composer: hand the draft to the model for a rewrite before sending, compare original vs. optimized, and **adopt** it into the input only if you like it |
+| **promptopt** | Star-icon button in the composer's tool row (hover for the tooltip): hand the draft to the model for a rewrite before sending, compare original vs. optimized, and **adopt** it into the input only if you like it |
 
 > As of v0.2.4 this pack is **mixed**: tokprev is pure browser UI; tokstats and promptopt ship a host half (tokstats scans durable session logs with an incremental checkpoint and publishes via the projection channel; promptopt registers an RPC channel for one side-channel model call and keeps **no on-disk state**).
 
@@ -99,7 +99,7 @@ Built-in prices only cover the `deepseek-official` route. For third-party provid
 
 ## promptopt
 
-After typing a draft you no longer need a separate "please optimize this prompt" turn: hit **Optimize prompt**, the model rewrites it, you compare original vs. optimized, and **adopt** it into the input only when you are happy. Close it and the draft is untouched.
+After typing a draft you no longer need a separate "please optimize this prompt" turn: hit the **star icon** in the tool row (hover for the tooltip, which changes to a reason when disabled), the model rewrites it, you compare original vs. optimized, and **adopt** it into the input only when you are happy. Close it and the draft is untouched.
 
 - **Where it lives**: `conversation.input.right` — the right end of the composer card's **internal** tool row, between the model select and the send button. v0.5.0 originally placed it in `conversation.composer.dock` (same band as tokprev), but the host contract labels dock as an ambient readout band — clickable controls belong in the tool row. v0.5.1 moves it to input.right, where the "reach for it on the way to sending" intent lands.
 - **Flow**: click (popover opens, spinner) → result arrives (original vs. optimized + elapsed time) → adopt or close. Closing, Esc, and clicking outside all count as cancel and abort the in-flight call.
