@@ -2,6 +2,12 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
 
+## [0.5.2] - 2026-08-30
+
+### Changed
+
+- **promptopt 按钮改成纯图标位**：去掉文字标签，hover 看 tooltip（空草稿/含 chip 时换禁用原因）。与工具行其他按钮（引用 / 计划 / 模型选择）形态一致，28x28 方形不撑长行。词典同步删 `button.label` 键——不留死键。
+
 ## [0.5.1] - 2026-08-30
 
 ### Changed

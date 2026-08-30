@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugins",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "个人 DSH 扩展集：单轮 token 预告（tokprev）、跨会话 token 统计（tokstats，含 host 聚合半边）与 composer 草稿提示词 AI 重写（promptopt，含 host 旁路模型调用）等插件的集合包",
   "type": "module",
   "main": "lib/index.js",
