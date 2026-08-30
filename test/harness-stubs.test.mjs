@@ -125,3 +125,14 @@ test("react mock useRef：传值原样保留，传 null 给 DOM 桩（兼容既�
 	assert.equal(typeof domRef.current.getBoundingClientRect, "function");
 	assert.equal(domRef.current.contains({}), false);
 });
+
+test("react mock useRef：跨渲染返回同一对象（否则组件写进 ref 的值下次渲染就丢）", () => {
+	const react = makeReactMock();
+	// 模拟一个组件的两次渲染：hook 调用顺序恒定，ref 槽位应命中同一个。
+	const first = react.useRef(null);
+	first.current = { aborted: false };
+	react.reset();
+	const second = react.useRef(null);
+	assert.equal(second, first, "同一 hook 序号必须复用同一个 ref 对象");
+	assert.deepEqual(second.current, { aborted: false });
+});

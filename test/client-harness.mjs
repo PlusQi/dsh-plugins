@@ -76,10 +76,14 @@ export function makeReactMock({ initialStates = [] } = {}) {
 		Fragment: Symbol.for("react.fragment"),
 		initialStates,
 		stateValues: [],
+		// ref 槽位按 hook 序号跨渲染复用：真实 React 的 useRef 每次渲染返回同一
+		// 个对象，桩若每次新建，组件写进 ref 的东西在下一次渲染就丢了——表现为
+		// 「点击时存进 ref 的控制器，关闭时读不到」，是桩的 bug 不是实现的 bug。
+		refs: [],
 		_effects: [],
 		_idx: 0,
 		reset() { react._idx = 0; },
-		clearStates() { react.stateValues.length = 0; react._idx = 0; },
+		clearStates() { react.stateValues.length = 0; react.refs.length = 0; react._idx = 0; },
 		runEffects() {
 			for (const fn of react._effects.splice(0)) {
 				try { fn(); } catch { /* effect 内部异常不阻断断言 */ }
@@ -106,9 +110,16 @@ export function makeReactMock({ initialStates = [] } = {}) {
 	};
 	react.useMemo = (f) => f();
 	// 传 null/undefined（DOM ref 的常规写法）时给一份 DOM 桩，让 tokstats 的
-	// 定位 effect 照常跑；传了值的（如存 AbortController）就原样拿着——否则
-	// 组件没法把跨渲染的可变对象挂在 ref 上。
-	react.useRef = (init) => ({ current: init === null || init === undefined ? makeDomRefStub() : init });
+	// 定位 effect 照常跑；传了值的（如存 AbortController）就原样拿着。
+	// 与 useState 共用 _idx：真实 React 的 hook 序号是整组件共享的，调用顺序
+	// 在同一组件内恒定。
+	react.useRef = (init) => {
+		const i = react._idx++;
+		if (!(i in react.refs)) {
+			react.refs[i] = { current: init === null || init === undefined ? makeDomRefStub() : init };
+		}
+		return react.refs[i];
+	};
 	react.useEffect = (fn) => { react._effects.push(fn); };
 	react.useLayoutEffect = (fn) => { react._effects.push(fn); };
 	return react;
