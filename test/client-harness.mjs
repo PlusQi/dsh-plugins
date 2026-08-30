@@ -14,17 +14,52 @@ const clientPath = join(here, "..", "lib", "client.js");
 /** 捕获 ensurePluginStyles 注入的 style tag（回归断言 CSS 关键声明用）。 */
 export const injectedStyleTags = [];
 
+// ── window / document 事件桩 ───────────────────────────────────────────────
+//
+// 弹层的「Esc 关闭 / 点外关闭」全靠 document 上的监听器，桩若只吞不记，这类
+// 行为就无法断言（只能断言 effect 跑了）。这里把监听器收进表，测试用
+// fireDocument / fireWindow 主动派发。
+
+/** type → listener 列表（window 与 document 各一份，互不干扰）。 */
+export const windowListeners = new Map();
+export const documentListeners = new Map();
+
+function addListener(map, type, fn) {
+	const list = map.get(type);
+	if (list === undefined) map.set(type, [fn]);
+	else list.push(fn);
+}
+function removeListener(map, type, fn) {
+	const list = map.get(type);
+	if (list === undefined) return;
+	const i = list.indexOf(fn);
+	if (i >= 0) list.splice(i, 1);
+}
+/** 派发一个事件给所有该类型的监听器（返回派发条数，便于断言「确实有人听」）。 */
+export function fireFrom(map, type, event = {}) {
+	const list = map.get(type) ?? [];
+	for (const fn of [...list]) fn(event);
+	return list.length;
+}
+export const fireDocument = (type, event) => fireFrom(documentListeners, type, event);
+export const fireWindow = (type, event) => fireFrom(windowListeners, type, event);
+
+/** 每个 ref 一份新的 DOM 桩：组件里 ref 是 per-instance 的，共享会串味。 */
+function makeDomRefStub() {
+	return { getBoundingClientRect: () => ({ left: 12, top: 340 }), contains: () => false };
+}
+
 export const clientDef = (() => {
 	let captured = null;
 	globalThis.window = { __ModuleLoader__: { load: (def) => { captured = def; } } };
 	// 组件 effect 会触碰 window/document（真实浏览器 API），提供最小桩。
 	globalThis.window.innerHeight = 800;
 	globalThis.window.innerWidth = 1280;
-	globalThis.window.addEventListener = () => {};
-	globalThis.window.removeEventListener = () => {};
+	globalThis.window.addEventListener = (type, fn) => addListener(windowListeners, type, fn);
+	globalThis.window.removeEventListener = (type, fn) => removeListener(windowListeners, type, fn);
 	globalThis.document = {
-		addEventListener: () => {},
-		removeEventListener: () => {},
+		addEventListener: (type, fn) => addListener(documentListeners, type, fn),
+		removeEventListener: (type, fn) => removeListener(documentListeners, type, fn),
 		querySelector: () => null,
 		createElement: () => ({ dataset: {}, style: {} }),
 		head: { appendChild: (tag) => { injectedStyleTags.push(tag); } },
@@ -70,7 +105,10 @@ export function makeReactMock({ initialStates = [] } = {}) {
 		}];
 	};
 	react.useMemo = (f) => f();
-	react.useRef = () => ({ current: { getBoundingClientRect: () => ({ left: 12, top: 340 }), contains: () => false } });
+	// 传 null/undefined（DOM ref 的常规写法）时给一份 DOM 桩，让 tokstats 的
+	// 定位 effect 照常跑；传了值的（如存 AbortController）就原样拿着——否则
+	// 组件没法把跨渲染的可变对象挂在 ref 上。
+	react.useRef = (init) => ({ current: init === null || init === undefined ? makeDomRefStub() : init });
 	react.useEffect = (fn) => { react._effects.push(fn); };
 	react.useLayoutEffect = (fn) => { react._effects.push(fn); };
 	return react;

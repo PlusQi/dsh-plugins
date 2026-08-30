@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { abortError, makeConnectionStub, makeHostCtx, makeLlmStub, textStream } from "./host-harness.mjs";
-import { makeRpcStub } from "./client-harness.mjs";
+import { fireDocument, fireWindow, makeReactMock, makeRpcStub } from "./client-harness.mjs";
 
 async function collect(stream) {
 	const out = [];
@@ -103,4 +103,25 @@ test("abortError 形态与浏览器一致（name 是判定取消的依据）", (
 	const error = abortError();
 	assert.equal(error.name, "AbortError");
 	assert.ok(error instanceof Error);
+});
+
+test("document 事件桩：监听器可派发、可摘除（Esc / 点外关闭要靠它断言）", () => {
+	const seen = [];
+	const onKey = (e) => seen.push(e.key);
+	document.addEventListener("keydown", onKey);
+	assert.equal(fireDocument("keydown", { key: "Escape" }), 1, "应有且仅有一个监听器被调用");
+	assert.deepEqual(seen, ["Escape"]);
+	document.removeEventListener("keydown", onKey);
+	assert.equal(fireDocument("keydown", { key: "Escape" }), 0, "摘除后不该再被派发");
+	assert.deepEqual(seen, ["Escape"]);
+	assert.equal(fireWindow("resize"), 0, "window 与 document 的监听器互不干扰");
+});
+
+test("react mock useRef：传值原样保留，传 null 给 DOM 桩（兼容既有定位 effect）", () => {
+	const react = makeReactMock();
+	const marker = { tag: "abort-controller" };
+	assert.equal(react.useRef(marker).current, marker, "跨渲染的可变对象必须拿得回来");
+	const domRef = react.useRef(null);
+	assert.equal(typeof domRef.current.getBoundingClientRect, "function");
+	assert.equal(domRef.current.contains({}), false);
 });
