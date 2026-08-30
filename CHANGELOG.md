@@ -2,7 +2,7 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
 
-## [Unreleased]
+## [0.5.0] - 2026-08-30
 
 ### Added
 
