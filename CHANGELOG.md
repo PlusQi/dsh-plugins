@@ -2,6 +2,13 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
 
+## [0.5.1] - 2026-08-30
+
+### Changed
+
+- **promptopt 触发位置从 `conversation.composer.dock` 改到 `conversation.input.right`**：dock 是宿主契约标注的「环境读数带」，可点控件本就该在 composer 工具行。新位置在模型选择座位之后、发送按钮之前，符合「发送前顺手点」的操作直觉。
+- **弹层定位从 absolute 改 fixed + 按钮矩形锚定**：absolute 在 composer 工具行里会被祖先的 `overflow: hidden` 裁剪（与 v0.3.0 tokstats 同款教训——DOM 里有但肉眼看不见）；fixed + JS 锚定不依赖任何祖先 layout。
+
 ## [0.5.0] - 2026-08-30
 
 ### Added
