@@ -67,13 +67,14 @@ const useSessionsOf = (snapshot) => (selector) => selector(snapshot);
 
 // ── 模块 / 注册 ────────────────────────────────────────────────────────────
 
-test("client 产物：导出 { inject: [slots, locale], apply }，apply 后注册两个插件的全部 slot", () => {
+test("client 产物：导出 { inject: [slots, locale], apply }，apply 后注册全部插件的 slot", () => {
 	const { exportsObj, registrations } = setupClient();
 	// locale 是硬依赖（与官方 UI 包同构）：宿主无 locale 服务时整包不加载。
 	assert.deepEqual(exportsObj.inject, ["slots", "locale"]);
 	const names = registrations.map((r) => r.opts.name + "#" + r.opts.id).sort();
 	assert.deepEqual(names, [
 		"conversation.chat.assistant-actions#tok-turn-badge",
+		"conversation.composer.dock#promptopt-button",
 		"conversation.composer.dock#tok-preview",
 		"sidebar.footer.action#tokstats-panel",
 	]);
