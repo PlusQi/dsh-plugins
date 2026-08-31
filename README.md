@@ -166,7 +166,7 @@ npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
 ```powershell
 git remote add origin git@github.com:PlusQi/dsh-plugins.git
 git push -u origin master
-git tag v0.2.0; git push --tags   # 可选：给用户可固定的版本打 tag
+git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # 必做：#vX.Y.Z 固定安装靠它，漏打则该版本号装不上；显式 ref 而非 --tags
 ```
 
 **打 tag 前的硬门槛**：link 安装目标提交 -> 重启 dsh web -> 刷新页面，目检**每个插件**的 UI 元素实际渲染。"启动无报错 ≠ 插件正常工作"——slot 注册是副作用，apply 提前返回或抛错都可能静默失效。目检不过不打 tag。

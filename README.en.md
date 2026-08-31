@@ -166,7 +166,7 @@ Restart to apply. Note the row's real semantics: `disabled` removes that row's *
 ```powershell
 git remote add origin git@github.com:PlusQi/dsh-plugins.git
 git push -u origin master
-git tag v0.2.0; git push --tags   # optional: tag a version users can pin
+git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # required: #vX.Y.Z pinning depends on it; a release without a tag is uninstallable. Explicit ref, not --tags
 ```
 
 **Hard gate before tagging**: link-install the target commit -> restart dsh web -> reload the page and visually verify **every plugin's** UI elements actually render. "Boots without errors ≠ plugin works" — slot registration is a side effect; an apply that returns early or throws can fail silently. No green visual check, no tag.
