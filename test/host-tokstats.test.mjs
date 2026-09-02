@@ -464,6 +464,47 @@ test("session/flush 增量：lastSeq 续折不重扫，终值替换语义保持"
 	assert.equal(cell.out, 79, "终值替换：72 - 2 + 9");
 });
 
+test("扫尾补折：会话不在快照表时补折结果仍落盘（不因取 revision 失败而丢）", async (t) => {
+	setup(t);
+	const log = makeLog();
+	const events = rootEvents(log);
+	const liveLog = makeLog();
+	const liveEvents = [
+		liveLog("request/header", T(10, 0), { header: { config: { provider: "live-p", model: "live-m" } } }),
+		liveLog("assistant/message", T(10, 5), { turn: 1, step: 1, message: { source: { kind: "model", provider: "live-p", model: "live-m" } }, usage: { inputTokens: 7, outputTokens: 3 } }),
+	];
+	const snapshots = [{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }];
+	const persistence = makePersistence(snapshots, { root: events, live: liveEvents }, { live: { id: "live", createdAt: T(10, 0), cwd: W_ALPHA } });
+
+	// 把扫盘卡在 listSnapshots 上，制造「扫描中收到 flush」的窗口。
+	let release = null;
+	const gate = new Promise((r) => { release = r; });
+	let gated = true;
+	const inner = persistence.listSnapshots;
+	persistence.listSnapshots = async () => {
+		if (gated) {
+			gated = false;
+			await gate;
+		}
+		return inner();
+	};
+
+	const { ctx, state } = makeCtx({ persistence });
+	mod.apply(ctx, { plugin: "tokstats" });
+	await settle();
+	assert.equal(state.registered.wire.view().complete, false, "扫盘仍停在 scanning");
+
+	// live 不在快照表里：主循环末尾 agg.sessions = next 会把它整个抹掉，
+	// 只剩扫尾补折能救回来。补折里取 revision 失败不能把这份数据一起带走。
+	state.flushHandler({ id: "live", header: { id: "live", createdAt: T(10, 0), cwd: W_ALPHA }, events: liveEvents });
+	release(snapshots);
+	await settle();
+
+	const cell = state.registered.wire.view().cells.find((c) => c.m === "live-m");
+	assert.ok(cell, "live 会话的统计没有被扫尾补折丢掉");
+	assert.equal(cell.out, 3);
+});
+
 // ── projection 单元语义 ───────────────────────────────────────────────────
 
 test("版本回声 apply：聚合版本变化返回新引用，未变返回同引用", async (t) => {
