@@ -42,10 +42,25 @@ function rootEvents(log) {
 	];
 }
 
-/** 伪 persistence：可配置的快照集 + 调用计数（inspect 计数用于对账断言）。 */
-function makePersistence(snapshots, logsById) {
+/**
+ * 真实 `ctx.sessionPersistence` 的公开面（`SessionPersistence` 抽象类；
+ * dsh-session-persistence 0.1.1-rc.2 与 0.1.2-alpha.3 一致）。
+ * 桩只能提供这个集合内的方法：多提供一个，就等于给「调了宿主没有的方法」这类
+ * 缺陷发通行证——2026-09-01 的 `readStoredRevision` 正是靠桩自己造出来才全绿。
+ */
+const SESSION_PERSISTENCE_SURFACE = [
+	"locate", "supportsRawArtifacts", "readRaw", "create", "append",
+	"prepare", "load", "inspect", "readFrom", "list", "listSnapshots",
+];
+
+/**
+ * 伪 persistence：可配置的快照集 + 调用计数（inspect 计数用于对账断言）。
+ * 读面外的方法名直接抛错：桩比真实宿主宽松时，缺陷会以「全绿」伪装过去。
+ * headersById 供「有日志但不在快照表」的活会话补折场景给 inspect 兜 meta。
+ */
+function makePersistence(snapshots, logsById, headersById) {
 	const calls = { listSnapshots: 0, inspect: 0 };
-	return {
+	const stub = {
 		calls,
 		async listSnapshots() {
 			calls.listSnapshots += 1;
@@ -55,13 +70,16 @@ function makePersistence(snapshots, logsById) {
 			calls.inspect += 1;
 			const events = logsById[id];
 			if (events === undefined) throw new Error("not found: " + id);
-			return { meta: snapshots.find((s) => s.header.id === id).header, events };
-		},
-		async readStoredRevision(id) {
-			const snap = snapshots.find((s) => s.header.id === id);
-			return snap === undefined ? undefined : snap.revision;
+			const meta = snapshots.find((s) => s.header.id === id)?.header ?? headersById?.[id] ?? { id };
+			return { meta, events };
 		},
 	};
+	return new Proxy(stub, {
+		get(obj, key) {
+			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
+			throw new Error(`tokstats 调了 persistence.${String(key)}：真实 ctx.sessionPersistence 面上没有这个方法`);
+		},
+	});
 }
 
 /** 伪 cordis ctx：inject 按就绪情况回调（缺席的依赖永不回调，模拟服务未注册）。 */
@@ -103,6 +121,19 @@ async function settle() {
 }
 
 const W_ALPHA = "D:\\proj\\alpha";
+
+// ── 测试桩保真度 ───────────────────────────────────────────────────────────
+
+test("伪 persistence 只提供真实服务面内的方法", () => {
+	const stub = makePersistence([], {});
+	const extra = Object.keys(stub).filter((k) => k !== "calls" && !SESSION_PERSISTENCE_SURFACE.includes(k));
+	assert.deepEqual(extra, [], "桩造出宿主没有的方法，会让用错 API 的实现也全绿");
+});
+
+test("读面外方法抛错：桩不替宿主兜底", () => {
+	const stub = makePersistence([], {});
+	assert.throws(() => stub.readStoredRevision, /persistence\.readStoredRevision/);
+});
 
 // ── 分发框架 ───────────────────────────────────────────────────────────────
 
