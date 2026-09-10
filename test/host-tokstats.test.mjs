@@ -57,14 +57,23 @@ const SESSION_PERSISTENCE_SURFACE = [
  * 伪 persistence：可配置的快照集 + 调用计数（inspect 计数用于对账断言）。
  * 读面外的方法名直接抛错：桩比真实宿主宽松时，缺陷会以「全绿」伪装过去。
  * headersById 供「有日志但不在快照表」的活会话补折场景给 inspect 兜 meta。
+ *
+ * `list` 如实建模 rc.2 语义（返回不含 revision 的 `SessionHeader[]`）并计数：
+ * 0.1.3-alpha.2 起同名方法改成返回带 revision 的快照，实现若图省事把
+ * `listSnapshots()` 直接改名为 `list()`，在 rc.2 上会静默丢掉全部 revision——
+ * 有计数就能把这条钉死。
  */
 function makePersistence(snapshots, logsById, headersById) {
-	const calls = { listSnapshots: 0, inspect: 0 };
+	const calls = { listSnapshots: 0, inspect: 0, list: 0 };
 	const stub = {
 		calls,
 		async listSnapshots() {
 			calls.listSnapshots += 1;
 			return snapshots;
+		},
+		async list() {
+			calls.list += 1;
+			return snapshots.map((s) => s.header);
 		},
 		async inspect(id) {
 			calls.inspect += 1;
@@ -76,6 +85,100 @@ function makePersistence(snapshots, logsById, headersById) {
 	};
 	return new Proxy(stub, {
 		get(obj, key) {
+			// 同 handle 桩：`then` 是引擎的 thenable 探测，不是插件在调方法。
+			if (key === "then") return undefined;
+			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
+			throw new Error(`tokstats 调了 persistence.${String(key)}：真实 ctx.sessionPersistence 面上没有这个方法`);
+		},
+	});
+}
+
+/**
+ * 新服务面（`SessionPersistence`，dsh-session-persistence 0.1.3-alpha.2 起）。
+ * 逐项抄自 `verify-host-contract.py --surface SessionPersistence` 在 0.1.5-rc.1 的输出。
+ * 与 rc.2 是**硬差异**而非子集：`inspect` / `listSnapshots` 被移除，`list()` 改成
+ * 返回带 revision 的快照（0.1.2-rc.1 共 13 个成员收尾于 `inspect`，0.1.3-alpha.2 起
+ * 只剩这 5 个且带 `open`——两代无共存窗口，故可用 `"open" in persistence` 当版本哨兵）。
+ */
+const SESSION_PERSISTENCE_SURFACE_V2 = ["create", "open", "flush", "stat", "list"];
+
+/** `SessionHandle` 成员面（同版本 `--file package/lib/types/handle.d.ts --surface SessionHandle`）。 */
+const SESSION_HANDLE_SURFACE = ["id", "header", "inheritedEventCount", "access", "read", "append", "flush", "close"];
+
+/**
+ * 伪 `SessionHandle`：成员面按真实声明写全，面外成员一律抛错。
+ * `inheritedEventCount` 刻意从独立的 inheritById 取而不是读 `header.seedLength`——
+ * 新版把 fork 前缀长度从 header 挪到了这个手柄字段上，若从 header 兜，
+ * 「实现漏改、继续读 meta.seedLength」这条静默错误就测不出来了。
+ */
+function makeHandleStub(id, header, events, calls, access, inheritedEventCount) {
+	const handle = {
+		id,
+		header,
+		inheritedEventCount,
+		access,
+		async read() {
+			calls.read += 1;
+			if (calls.failRead === true) throw new Error("read failed: " + id);
+			return { eventState: "shared", events };
+		},
+		async append() {
+			throw new Error("本桩不覆盖写路径");
+		},
+		async flush() {
+			throw new Error("本桩不覆盖写路径");
+		},
+		async close() {
+			calls.close += 1;
+			if (calls.failClose === true) throw new Error("close failed: " + id);
+		},
+	};
+	return new Proxy(handle, {
+		get(obj, key) {
+			// `then` 是 JS 引擎的 thenable 探测（async 函数 return 值、await 都会读它），
+			// 不是本插件在调方法；真实对象没有 then 只会得到 undefined，不会抛。
+			if (key === "then") return undefined;
+			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
+			throw new Error(`tokstats 调了 handle.${String(key)}：真实 SessionHandle 面上没有这个成员`);
+		},
+	});
+}
+
+/**
+ * 伪 persistence（新服务面）：会话读取走 `open(id,'read')` 手柄。
+ * 同款保真度闸门（面外方法抛错）；`accesses` 记账供断言读路径只用 read 权限
+ * （误用 'write' 会抢单写所有权，是真实存在的并发缺陷）。
+ */
+function makePersistenceV2(snapshots, logsById, headersById, inheritById) {
+	const calls = { list: 0, open: 0, read: 0, close: 0, accesses: [], failRead: false, failClose: false };
+	const stub = {
+		calls,
+		async create() {
+			throw new Error("本桩不覆盖建会话路径");
+		},
+		async open(id, access) {
+			calls.open += 1;
+			calls.accesses.push(access);
+			const events = logsById[id];
+			if (events === undefined) throw new Error("not found: " + id);
+			const header = snapshots.find((s) => s.header.id === id)?.header ?? headersById?.[id] ?? { id };
+			return makeHandleStub(id, header, events, calls, access, inheritById?.[id] ?? 0);
+		},
+		async flush() {
+			throw new Error("本桩不覆盖全库 flush");
+		},
+		async stat() {
+			throw new Error("本桩不覆盖 stat");
+		},
+		async list() {
+			calls.list += 1;
+			return snapshots;
+		},
+	};
+	return new Proxy(stub, {
+		get(obj, key) {
+			// 同 handle 桩：`then` 是引擎的 thenable 探测，不是插件在调方法。
+			if (key === "then") return undefined;
 			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
 			throw new Error(`tokstats 调了 persistence.${String(key)}：真实 ctx.sessionPersistence 面上没有这个方法`);
 		},
@@ -133,6 +236,32 @@ test("伪 persistence 只提供真实服务面内的方法", () => {
 test("读面外方法抛错：桩不替宿主兜底", () => {
 	const stub = makePersistence([], {});
 	assert.throws(() => stub.readStoredRevision, /persistence\.readStoredRevision/);
+});
+
+test("伪 persistence（新服务面）只提供真实服务面内的方法", () => {
+	const stub = makePersistenceV2([], {});
+	const extra = Object.keys(stub).filter((k) => k !== "calls" && !SESSION_PERSISTENCE_SURFACE_V2.includes(k));
+	assert.deepEqual(extra, [], "桩造出宿主没有的方法，会让用错 API 的实现也全绿");
+});
+
+test("两代服务面的允许清单不重叠地覆盖差异（inspect/listSnapshots ↔ open/stat）", () => {
+	// 防止日后有人把两份清单合并成一份「并集」——那会让桩同时提供两代的方法，
+	// 版本哨兵就再也测不出「实现写死了某一代」。
+	assert.deepEqual(SESSION_PERSISTENCE_SURFACE_V2.filter((k) => SESSION_PERSISTENCE_SURFACE.includes(k)), ["create", "list"]);
+	assert.ok(!SESSION_PERSISTENCE_SURFACE.includes("open"));
+	assert.ok(!SESSION_PERSISTENCE_SURFACE_V2.includes("inspect"));
+});
+
+test("伪 SessionHandle 的成员面等于真实声明", async () => {
+	const stub = makePersistenceV2([{ header: { id: "s1" }, revision: "r1" }], { s1: [] });
+	const handle = await stub.open("s1", "read");
+	assert.deepEqual(Object.keys(handle).sort(), [...SESSION_HANDLE_SURFACE].sort(), "手柄桩多/少成员都测不出真缺陷");
+});
+
+test("手柄读面外成员抛错：桩不替宿主兜底", async () => {
+	const stub = makePersistenceV2([{ header: { id: "s1" }, revision: "r1" }], { s1: [] });
+	const handle = await stub.open("s1", "read");
+	assert.throws(() => handle.readFrom, /handle\.readFrom/);
 });
 
 // ── 分发框架 ───────────────────────────────────────────────────────────────
