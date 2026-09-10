@@ -658,6 +658,159 @@ test("版本回声 apply：聚合版本变化返回新引用，未变返回同�
 	assert.ok(def.wire.viewSchema.parse(state.registered.wire.view()), "duck-type viewSchema 恒等通过");
 });
 
+// ── 新服务面（0.1.3-alpha.2+）路径 ────────────────────────────────────────
+//
+// 跨版本适配的正确性只能靠「同一份 fixture 喂两代桩、产出必须一致」来钉：
+// 两代的方法名、返回形状、fork 前缀字段来源都不同，任何一处映射错了，
+// 都会表现为静默的统计偏差而不是报错。
+
+test("两代服务面产出逐格一致（list/snapshots vs inspect）", async (t) => {
+	setup(t);
+	const log = makeLog();
+	const events = rootEvents(log);
+	const snapshots = [{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }];
+	const old = makeCtx({ persistence: makePersistence(snapshots, { s1: events }) });
+	mod.apply(old.ctx, { plugin: "tokstats" });
+	await settle();
+	const next = makeCtx({ persistence: makePersistenceV2(snapshots, { s1: events }) });
+	mod.apply(next.ctx, { plugin: "tokstats" });
+	await settle();
+	const cellOld = old.state.registered.wire.view().cells;
+	const cellNext = next.state.registered.wire.view().cells;
+	assert.ok(cellOld.length > 0, "旧路径有产出，比对才有意义");
+	assert.deepEqual(cellNext, cellOld, "两代路径的折叠结果必须逐格一致");
+	assert.equal(next.state.registered.wire.view().complete, true, "新路径扫盘正常收尾");
+});
+
+test("新服务面 fork 前缀去重：靠 handle.inheritedEventCount（header 已无 seedLength）", async (t) => {
+	setup(t);
+	const log = makeLog();
+	const root = rootEvents(log);
+	// seed 前缀 = 父日志 seq 0..4 的浅拷贝（seq 重映射为子日志自己的 0..4）。
+	const child = [
+		...root.slice(0, 5).map((e, i) => ({ ...e, seq: i })),
+		{ type: "assistant/message", seq: 5, time: T(11, 30), data: { turn: 1, step: 9, message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } }, usage: { inputTokens: 100, outputTokens: 5 } } },
+	];
+	// 新版 header 只有 isSeeded，前缀长度在 storage metadata 上（手柄字段）。
+	const persistence = makePersistenceV2(
+		[
+			{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "rr" },
+			{ header: { id: "child", createdAt: T(10, 0), parentSession: "root", isSeeded: true, delegationDepth: 1 }, revision: "rc" },
+		],
+		{ root, child },
+		undefined,
+		{ child: 5 },
+	);
+	const { ctx, state } = makeCtx({ persistence });
+	mod.apply(ctx, { plugin: "tokstats" });
+	await settle();
+	const cell = state.registered.wire.view().cells.find((c) => c.w === W_ALPHA && c.p === "deepseek-official" && c.b === 0 && c.d === D1);
+	// 根 70 + 子 step9 = 5 → 75；若漏读 inheritedEventCount，子会话的 seed 前缀
+	// 会被重复计入，out 会变成 75 + 70 = 145。
+	assert.equal(cell.out, 75);
+	assert.equal(cell.in, 1600);
+	assert.equal(cell.calls, 3);
+});
+
+test("新服务面读日志只用 read 权限（误用 write 会抢单写所有权）", async (t) => {
+	setup(t);
+	const log = makeLog();
+	const events = rootEvents(log);
+	const persistence = makePersistenceV2([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
+	const { ctx, state } = makeCtx({ persistence });
+	mod.apply(ctx, { plugin: "tokstats" });
+	await settle();
+	assert.ok(persistence.calls.accesses.length > 0, "确实开过手柄");
+	assert.deepEqual([...new Set(persistence.calls.accesses)], ["read"], "只允许 read");
+	assert.ok(state.registered.wire.view().cells.length > 0);
+});
+
+test("手柄 close 抛错不掩盖已读到的日志", async (t) => {
+	setup(t);
+	const log = makeLog();
+	const events = rootEvents(log);
+	const persistence = makePersistenceV2([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
+	persistence.calls.failClose = true;
+	const { ctx, state } = makeCtx({ persistence });
+	mod.apply(ctx, { plugin: "tokstats" });
+	await settle();
+	assert.equal(persistence.calls.close, 1, "确实走到了 close 且它抛了");
+	const cell = state.registered.wire.view().cells.find((c) => c.p === "deepseek-official");
+	assert.ok(cell, "close 抖动不该把整个会话判成读取失败");
+	assert.equal(cell.out, 70);
+});
+
+test("新服务面单会话 read 失败：跳过该会话，其余正常", async (t) => {
+	setup(t);
+	const log = makeLog();
+	const events = rootEvents(log);
+	const persistence = makePersistenceV2([
+		{ header: { id: "bad", createdAt: T(10, 0), cwd: "D:\\bad" }, revision: "r1" },
+		{ header: { id: "good", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r2" },
+	], { bad: events, good: events });
+	// bad 的 read 抛错、good 正常：用 id 分流。
+	const inner = persistence.open;
+	persistence.open = async (id, access) => {
+		const handle = await inner(id, access);
+		if (id === "bad") handle.read = async () => { throw new Error("read blew up: bad"); };
+		return handle;
+	};
+	const warns = [];
+	const { ctx, state } = makeCtx({ persistence, loggerWarns: warns });
+	mod.apply(ctx, { plugin: "tokstats" });
+	await settle();
+	assert.ok(warns.some((w) => w.includes("bad")), "失败会话有日志告警");
+	const cells = state.registered.wire.view().cells;
+	assert.ok(cells.every((c) => c.w === W_ALPHA), "只有 good 的数据");
+	assert.equal(cells.find((c) => c.p === "deepseek-official").out, 70);
+});
+
+test("旧服务面不误调 list()：rc.2 的 list 返回 header[]，认名字换名会丢掉全部 revision", async (t) => {
+	const { cpPath } = setup(t);
+	const log = makeLog();
+	const events = rootEvents(log);
+	const persistence = makePersistence([{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { root: events });
+	const first = makeCtx({ persistence });
+	mod.apply(first.ctx, { plugin: "tokstats" });
+	await settle();
+	t.mock.timers.tick(2000);
+	await settle();
+	assert.equal(persistence.calls.list, 0, "旧路径必须走 listSnapshots");
+	assert.equal(JSON.parse(readFileSync(cpPath, "utf8")).sessions.root.rev, "r1", "revision 确实落进了 checkpoint");
+});
+
+test("新服务面对账等效：rev 命中零重读，变更才重折", async (t) => {
+	const { cpPath } = setup(t);
+	const log1 = makeLog();
+	const eventsA = [
+		log1("request/header", T(10, 0), { header: { config: { provider: "p", model: "m" } } }),
+		log1("assistant/message", T(10, 0), { turn: 1, step: 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 10, outputTokens: 1 } }),
+	];
+	const logsById = { a: eventsA };
+	const persistence = makePersistenceV2([{ header: { id: "a", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "ra" }], logsById);
+	const first = makeCtx({ persistence });
+	mod.apply(first.ctx, { plugin: "tokstats" });
+	await settle();
+	t.mock.timers.tick(2000);
+	await settle();
+	assert.equal(JSON.parse(readFileSync(cpPath, "utf8")).sessions.a.rev, "ra");
+
+	// 二次启动：同 revision → 不再开手柄读日志
+	const before = persistence.calls.open;
+	const second = makeCtx({ persistence });
+	mod.apply(second.ctx, { plugin: "tokstats" });
+	await settle();
+	assert.equal(persistence.calls.open, before, "rev 命中不重读日志");
+	assert.equal(second.state.registered.wire.view().cells.reduce((s, c) => s + c.in, 0), 10, "复用 checkpoint 数据");
+
+	// rev 变更 → 重折
+	logsById.a = [...eventsA, log1("assistant/message", T(11, 0), { turn: 1, step: 2, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 5, outputTokens: 1 } })];
+	const third = makeCtx({ persistence: makePersistenceV2([{ header: { id: "a", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "ra2" }], logsById) });
+	mod.apply(third.ctx, { plugin: "tokstats" });
+	await settle();
+	assert.equal(third.state.registered.wire.view().cells.reduce((s, c) => s + c.in, 0), 15, "rev 变更后重折");
+});
+
 // ── 降级矩阵（硬规则 6） ──────────────────────────────────────────────────
 
 test("persistence 缺席：5s 后发布 no-persistence 完成态空数据", async (t) => {
