@@ -21,8 +21,10 @@ git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # 必做：#vX.Y.Z 固定安�
 
 **打 tag 前的硬门槛**：link 安装目标提交 -> 重启 dsh web -> 刷新页面，目检**每个插件**的 UI 元素实际渲染。"启动无报错 ≠ 插件正常工作"——slot 注册是副作用，apply 提前返回或抛错都可能静默失效。目检不过不打 tag。
 
-推上去即可被安装，无需注册表。`files` 字段保证 git 安装只带
-`lib/` + `cordis.patch.yml`（pnpm 打包时自动附带 README / LICENSE / package.json）。
+推上去即可被安装，无需注册表。`files` 字段保证打包形态（git 安装 / npm 安装都走打包）只带运行必需件加文档：
+`lib/` + `cordis.patch.yml` + `AGENTS.md` / `CHANGELOG.md` / `docs/MAINTAINING.md`（README / LICENSE / package.json 由打包器自动附带，不必列）。
+
+`docs/assets/` 的四张截图**不进包**（1.1MB，看 GitHub 上的 README 就够）：包内 README 的文本链接可达，但效果图会裂。要连图一起带，把 `docs/assets` 加进 `files`。
 
 ## 新增插件（本包的维护模式）
 
