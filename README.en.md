@@ -2,8 +2,9 @@
 
 [简体中文](./README.md) | English
 
-Personal extension pack for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness).
-One repo = one profile bundle: all plugins live in a single pack — adding a plugin is just code + a restart, no reinstall.
+A repository of possibly useful [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) plugins.
+
+All plugins live in a single pack (one repo = one profile bundle): install once and they are all in — no per-plugin install.
 
 ## Plugins
 
@@ -13,14 +14,14 @@ One repo = one profile bundle: all plugins live in a single pack — adding a pl
 | **tokstats** | Sidebar-footer button + popover: cross-session token consumption stats (period overview / by workspace / by model with cost / context-length buckets, today · this week · total switch) |
 | **promptopt** | Star-icon button in the composer's tool row (hover for the tooltip): hand the draft to the model for a rewrite before sending, compare original vs. optimized, and **adopt** it into the input only if you like it |
 
-> As of v0.2.4 this pack is **mixed**: tokprev is pure browser UI; tokstats and promptopt ship a host half (tokstats scans durable session logs with an incremental checkpoint and publishes via the projection channel; promptopt registers an RPC channel for one side-channel model call and keeps **no on-disk state**).
+> **tokprev** is a pure interface plugin; **tokstats** and **promptopt** also ship a host-side half (one aggregates session logs in the background, the other makes a single side-channel model call).
 
 ## Language (Chinese / English)
 
 Plugins render their copy through the host locale service and **follow DSH Settings → General → Language**; the pack itself has no language switch.
 
-- Dictionaries are namespaced per plugin — `dsh-plugins.tokprev`, `dsh-plugins.tokstats` and `dsh-plugins.promptopt` — registered by `lib/client.js`'s apply (zh is the key-set source of truth; en must match key for key, asserted bidirectionally by the tests).
-- promptopt splits **two axes**: UI copy follows the host language, while the **rewritten prompt follows the draft's language** (a Chinese draft still comes back Chinese on an English UI) — the rewrite is content, not UI copy, so it never enters a dictionary.
+- Dictionaries are namespaced per plugin — `dsh-plugins.tokprev`, `dsh-plugins.tokstats` and `dsh-plugins.promptopt`.
+- promptopt splits **two axes**: UI copy follows the host language, while the **rewritten prompt follows the draft's language** (a Chinese draft still comes back Chinese on an English UI) — the rewrite is content, not UI copy.
 - With no explicit choice the host falls back to the browser language, and to en when it is neither zh nor en.
 - `locale` is a **hard dependency** (as in official UI packs): when the host has no locale service (or it is disabled by hand), the whole bundle does not load — the UI disappears with no log line, rather than showing half-translated copy.
 - Number notation (1.2K / 3.4M), context bucket ranges (`[0,4K)`) and the ¥ sign are not translated (they read the same in English, and ¥ is DeepSeek's official RMB pricing — CNY would mislead); the panel footer clock is fixed 24-hour, independent of the browser locale.
@@ -58,24 +59,22 @@ A muted one-liner rendered on the closing assistant message of each turn (durabl
 - The **preview** estimates the prompt size of a single request;
 - The **badge** reports the **sum of billed input across all calls of the turn** — in a multi-step turn every step resends the full context, so the total is far larger than a single request; the cache-hit field (the "cache" segment in the badge) explains the gap. The two measure different things, both meaningfully.
 
-### Host contracts
-
-UI slots `conversation.composer.dock` and `conversation.chat.assistant-actions`; projection fields `contextPressure` / `contextBreakdown`; `AssistantMessageNode.usage`. Every read path degrades gracefully (renders null when data is missing, never throws).
-
 ## tokstats
 
 Cross-session token consumption stats: the host's StatsLine only sees one session; this plugin scans every durable session log to answer "how much did I burn today", "which project eats the most", "how often do I run long contexts".
 
 ![tokstats panel](./docs/assets/tokstats-en.png)
 
-A "Token 统计" button at the sidebar footer (an icon seat in rail mode) opens a popover panel:
+A "Token stats" button at the sidebar footer (an icon seat in rail mode) opens a popover panel:
 
 - **Overview**: today / this week (Monday-based) / total — call count and the four buckets (tokens only, no money);
 - **By workspace**: top 8 (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted);
-- **By model**: provider/model rows with an estimated cost column (a 「未配价」 marker when unpriced);
-- **Context-length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)` with requests / input / output / cache-hit rate.
+- **By model**: provider/model rows with an estimated cost column (a "no price" marker when unpriced);
+- **Context length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)` with requests / input / output / cache-hit rate.
 
 Same accounting as the host: billed input = `inputTokens + cacheReadTokens + cacheWriteTokens`; the final `assistant/message.usage` of a `(turn, step)` replaces its usage-chunk sample (no double counting). Money figures are **estimates**: built-in DeepSeek official peak rates (CNY/Mtok, overridable), and the panel says so.
+
+Right after the first install the panel shows "Scanning…" until some session is opened (or a stats push arrives); missing host-side services show an explanatory note instead of an error.
 
 ### Pricing config (optional)
 
@@ -90,36 +89,19 @@ Built-in prices only cover the `deepseek-official` route. For third-party provid
           glm-5.3: { input: 2, inputCached: 0.2, output: 4 }
 ```
 
-### Host-side behavior
-
-- Asynchronous boot scan (never blocks startup): `listSnapshots` reconciles the checkpoint (`$DSH_HOME/storages/tokstats-checkpoint.json`, keyed by `(sessionId, storage revision)`) and re-inspects only sessions whose logs changed; a corrupt checkpoint falls back to a full rescan;
-- Live sessions refold incrementally from the last seq after each flush; changes are checkpointed with a debounce;
-- Data flows through the `sessionProjections` channel (`tokstats` unit); right after first install the panel shows "统计中…" until some session is opened or a push arrives;
-- Fully degraded: missing persistence/projection services never throw — the panel explains.
-
 ## promptopt
 
 After typing a draft you no longer need a separate "please optimize this prompt" turn: hit the **star icon** in the tool row (hover for the tooltip, which changes to a reason when disabled), the model rewrites it, you compare original vs. optimized, and **adopt** it into the input only when you are happy. Close it and the draft is untouched.
 
-- **Where it lives**: `conversation.input.right` — the right end of the composer card's **internal** tool row, between the model select and the send button. v0.5.0 originally placed it in `conversation.composer.dock` (same band as tokprev), but the host contract labels dock as an ambient readout band — clickable controls belong in the tool row. v0.5.1 moves it to input.right, where the "reach for it on the way to sending" intent lands.
+- **Where it lives**: the right end of the composer card's **internal** tool row — between the model select and the send button, where your hand already is on the way to sending.
 - **Flow**: click (popover opens, spinner) → result arrives (original vs. optimized + elapsed time) → adopt or close. Closing, Esc, and clicking outside all count as cancel and abort the in-flight call.
 - **Disabled** (greyed out, with a tooltip explaining why): the draft is empty, or it contains a reference chip, an image attachment, or a `/` command token — adopting is a full-text replacement, so a model reshuffle would break reference offsets and image ownership. That is silent corruption, so the button simply refuses.
 - **Adopt semantics**: the snapshot taken when you clicked wins, and it is written back unconditionally. If you edited the draft while waiting, adopting overwrites those edits (no confirmation dialog).
 - **Model and cost**: one **side-channel call** through the host's `ctx.llm`, riding the first registered provider/model route. **No configuration surface** and no API key of its own; each click is one model call (input on the order of 1.5x the draft).
 - **Nothing on disk**: no checkpoint, no session log — purely in-memory. This call is **not** counted by tokstats (it never lands in the durable session log).
+- **Degrades**: when the model service is absent, clicking shows "The model call failed — please try again" instead of a blank screen.
 
-### Host-side behavior
-
-- Registers the RPC channel `/dsh-plugins.promptopt` (`ctx.connection.rpc.handle`, detached when this row's fiber unloads) with an `optimize` endpoint;
-- Takes `{ text }`, prepends the built-in meta-prompt, collects the full output from `ctx.llm.stream`, and returns `{ text, durationMs, usage? }`. Failures return **machine codes only** (`bad-request` / `model-unavailable` / `internal` / `cancelled`) and the browser half resolves them through its dictionary — the host has no locale service and never builds human-readable copy;
-- A 60s timeout as a second line of defense; an abort from the browser (closing the popover) cancels the call;
-- **Degrades**: when the `connection` or `llm` service is absent the channel is never registered and clicking shows "the model call failed" instead of a blank screen. `connection` is read lazily via `ctx.get` rather than `inject` — the latter is a hard dependency, and its absence would take tokprev and tokstats down with it.
-
-### Host contracts
-
-UI slot `conversation.input.right` (composer card's **internal** tool row); `InputActions.setDraft` and `InputState` (`draft` / `imageIds` / `occurrences` / `claim`); the client service `ctx.connection.rpc.call`; host services `ctx.connection.rpc.handle` (`authority: "trusted-host"`) and `ctx.llm` (`stream` / `listProviders` / `listModels`).
-
-If the button does nothing or always errors after a DSH upgrade, check these contracts first — above all the RPC response envelope (success must be `{ ok: true, value }`; error codes come from a host-side closed set) and the fact that `GenerateOptions.provider` / `.model` are both required.
+If the button does nothing or always errors after a DSH upgrade, check the host-contract list in the maintenance doc first.
 
 ## Installation (web profile)
 
@@ -159,63 +141,11 @@ To temporarily disable a single plugin (no code changes): append to `~/.dsh/prof
   disabled: true
 ```
 
-Restart to apply. Note the row's real semantics: `disabled` removes that row's **host-side** fiber only — whether the browser bundle loads depends on **whether any row of the pack is still live** (DSH's boot graph keys on package name; the client has one fiber per package that registers ALL plugins unconditionally). For a plugin whose host half does real work — like tokstats — disabling its row stops the aggregator (the client button stays but shows no data); for a pure-UI plugin like tokprev, disabling one row does **not** remove its browser UI (the remaining rows keep the whole bundle alive). For a per-plugin off-switch, split the plugin into its own package (see the end of "Adding a new plugin" below).
+Restart to apply. Note: `disabled` removes that row's **host-side** fiber only — whether the browser-side UI unloads depends on **whether any row of the pack is still live**, so for a pure-interface plugin like tokprev, disabling one row does **not** make it disappear from the page. For a real per-plugin off-switch, split the plugin into its own package (rationale and steps in the maintenance doc).
 
-## Publishing to GitHub (maintainers)
+## Maintenance
 
-```powershell
-git remote add origin git@github.com:PlusQi/dsh-plugins.git
-git push -u origin master
-git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # required: #vX.Y.Z pinning depends on it; a release without a tag is uninstallable. Explicit ref, not --tags
-```
-
-**Hard gate before tagging**: link-install the target commit -> restart dsh web -> reload the page and visually verify **every plugin's** UI elements actually render. "Boots without errors ≠ plugin works" — slot registration is a side effect; an apply that returns early or throws can fail silently. No green visual check, no tag.
-
-Push and it's installable — no registry needed. The `files` field keeps git installs to
-`lib/` + `cordis.patch.yml` (pnpm automatically includes README / LICENSE / package.json when packing).
-
-## Adding a new plugin (pack maintenance mode)
-
-1. Add one entry to the `PLUGINS` registry in `lib/client.js`: `css` + **`ns`** + **`dicts`** + `apply(ctx)` (helpers, components, dictionaries, and the `ctx.slots.inject(...)` registration block all live in this section):
-
-   ```js
-   const LOCALE_NS_XXX = "dsh-plugins.xxx";
-   const xxxZh = { "row.title": "标题" };
-   const xxxEn = { "row.title": "Title" };
-   // inside PLUGINS: xxx: { css: xxxCss, apply: xxxApply, ns: LOCALE_NS_XXX, dicts: { zh: xxxZh, en: xxxEn } }
-   ```
-
-   `npm run guard` rejects an entry missing `ns` / `dicts`; write `ns: null` explicitly when the plugin genuinely has no interface copy.
-
-2. Add one row to `cordis.patch.yml` (`name` is always `'dsh-plugins'`, `config.plugin` points to the registry key; prefix the id with your own so it never collides with dsh-base/dsh-web-app builtin ids):
-
-   ```yaml
-   - id: xxx
-     name: 'dsh-plugins'
-     config:
-       plugin: xxx
-   ```
-
-3. **All copy goes through the dictionaries**: declare `locale: ns` on the slot registration to get the standard `t` seat, write copy as `{name}` whole-sentence templates (rewrite English in English word order — never concatenate fragments), and pair count-bearing keys as `.one` / `.other`; call `assertDictPair` (`test/client-harness.mjs`) in the tests to assert zh/en key-set parity — with no build step, that is the only replacement for the compile-time guarantee official packs get from TS. See hard rule 7 in [AGENTS.md](./AGENTS.md) for the terminology table.
-
-4. Keep a local decision record for that plugin (not shipped with the repo, for maintainers to look back on);
-5. Restart the process. **Zero install operations.**
-
-Four hard constraints of the multi-plugin structure (from DSH itself — read before changing):
-
-- **Client bundles are discovered by package name**: the host resolves `<name>/package.json` by the entry's `name` to read the `dsh.client` declaration, and serves the whole package via `exports["./client"]`. The row's name must be the bare package name `dsh-plugins`; a subpath like `dsh-plugins/xxx` only loads the host half (dsh-web-app's `web-startup` row is exactly this host-only subpath usage).
-- **The client module graph is flat per package**: a package's client half = one module node — no splitting into multiple files (a bundle factory's `require` only knows module-table words; relative paths throw). All plugins share the single `lib/client.js` file, kept sane by section discipline — that's the boundary of "no build step".
-- **Host gets one fiber per row; the client gets one fiber per package**: each patch row creates a **host** fiber, and `config.plugin` is a host-plane dispatch key (dsh-base's `tool-subagent` / `tool-subagent-fork` is the same-name multi-row reference). This pack's `lib/index.js` dispatches `apply(ctx, config)` on that key: pure-UI plugins have empty host halves (rows act as presence / disable anchors), while tokstats's aggregator rides the `tokstats` row's fiber (row disabled = stats stop). The **client-side `__DSH_BOOT__` manifest creates ONE entry per package with no config** (`dsh-client-modules` builds its boot graph keyed by package name), so `lib/client.js`'s apply registers ALL `PLUGINS` entries unconditionally and components return null when their data is missing. There is no "second row runs apply again" client-side, and dispatching by `config.plugin` in the client is impossible. The host half has an extra module-graph constraint: under pnpm link installs the plugin's real path sits outside the host's node_modules tree, so **npm-package imports don't resolve** — `lib/index.js` uses only `node:` builtins plus the `apply(ctx, config)` arguments, importing no cordis/zod runtime dependency.
-- **Styles are tagged per plugin**: give each plugin its own `data-plugin-css="dsh-plugins/<id>"` tag (`ensurePluginStyles` idempotent insert, removed when the pack fiber stops); this keeps per-plugin granularity so a plugin split out into its own package later takes its styles along verbatim.
-
-Outgrown the pack and want independent releases / a separate repo? Copy the registration block plus the patch row into a new package (see how the existing plugins in this repo are implemented and packaged).
-
-## Maintenance notes
-
-- **No build step**: `lib/client.js` is the shipped artifact (plain JS, no TS/JSX; React is injected by the ModuleLoader). Changes = edit + restart. The host half `lib/index.js` is likewise plain JS: it imports only `node:` builtins (fs/os/path), no npm runtime dependency.
-- **Compatibility surface**: tokprev depends on UI slot contracts (`conversation.composer.dock`, `conversation.chat.assistant-actions`) and projection fields (`contextPressure`/`contextBreakdown`/`AssistantMessageNode.usage`); tokstats depends on the `sidebar.footer.action` slot (root scope — standard seats are only `useSessions`/`useWorkspaces`; the projection value is read from the session-list snapshot's `projectionValues`), host services `ctx.sessionPersistence` (`listSnapshots`/`inspect`/`readStoredRevision`) and `ctx.sessionProjections` (registers the `tokstats` unit), and the `session/flush` event; promptopt depends on the `conversation.input.right` slot, `InputActions.setDraft`, the client-side `ctx.connection.rpc.call`, and host services `ctx.connection.rpc.handle` / `ctx.llm` (details in its section above). Interface copy additionally depends on the client service `ctx.locale` (dictionary registration + the `locale` namespace declared on slot registrations to obtain the `t` seat) — a hard dependency: without it the whole bundle does not load. If a plugin vanishes after a DSH upgrade, check these contracts first. Every read path degrades gracefully (renders null when data is missing, never throws).
-- **Developed against**: DSH `@deepseek-ai/dsh 0.1.1-rc.2`. promptopt's host half leans on **three deep contracts at once** (`InputActions` / `connection.rpc` / `llm.stream`), and rc releases keep the right to break them — after any upgrade, re-verify promptopt first: the response envelope (success must be `{ ok: true, value }`; error codes come from a host-side closed set), whether `GenerateOptions.provider` / `.model` are still required, and whether `connection.rpc.handle`'s call path and `options.authority` still exist.
-- **Dev loop**: prototype live in a session with dynamic Cordis plugins (`cordis_define` -> `cordis_run`) first, then land it in this pack once satisfied.
+This file is for users. Maintainers and AI agents start from [AGENTS.md](./AGENTS.md) (routing table + hard rules + structural guard); the publishing flow, the four steps for adding a plugin, the four hard constraints of the multi-plugin structure, each plugin's host-side behavior and host contracts, and the real semantics of the per-plugin switch live in [docs/MAINTAINING.md](./docs/MAINTAINING.md). Release history: [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 
