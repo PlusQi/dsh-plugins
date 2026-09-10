@@ -5,14 +5,14 @@
 > 最后核验：2026-08-28
 > 维护责任：修改仓库级约束的提交者
 
-本文件是维护者与 AI Agent 进入仓库的执行入口。使用者视角的安装/发布说明见 [README.md](./README.md)，两者不重复承载内容。
+本文件是维护者与 AI Agent 进入仓库的执行入口。使用者视角的安装与用法见 [README.md](./README.md)，维护流程与实现细节的详述见 [docs/MAINTAINING.md](./docs/MAINTAINING.md)——三者分工：本文件是**规则**，维护文档是**详述**，README 只讲使用者看得见的东西。
 
 ## 优先级
 
 ```latex
-宿主兼容契约（UI slot / 投影字段，见 README「维护须知」）
+宿主兼容契约（UI slot / 投影字段，见 docs/MAINTAINING.md「插件的 host 侧行为与宿主契约」）
   > 本文件硬规则
-  > README 维护说明（「新增插件」「多插件四条硬约束」详述）
+  > docs/MAINTAINING.md（「新增插件」「多插件结构的四条硬约束」详述）
   > 本地 Active spec（docs/specs/active/，进行中变更的 SDD 四件套；本地不随仓库分发，完成验收后回填并归档）
   > 本地设计记录（docs/specs/archive/ 与 docs/debug/，仅历史证据，不随仓库分发，不约束当前实现）
 ```
@@ -25,12 +25,12 @@
 
 | 变更 | 必读材料 | 最低验证 |
 | --- | --- | --- |
-| `lib/client.js` 任意改动 | 本文件硬规则 + README「维护须知」 | `npm test`（含 client 浅渲染断言）+ `node scripts/check-plugin-structure.js` + 重启 dsh web 目检 |
+| `lib/client.js` 任意改动 | 本文件硬规则 + docs/MAINTAINING.md「插件的 host 侧行为与宿主契约」 | `npm test`（含 client 浅渲染断言）+ `node scripts/check-plugin-structure.js` + 重启 dsh web 目检 |
 | `lib/index.js`（host 半边，tokstats 聚合器） | 本文件硬规则 5 的 host 延伸（只用 `node:` 内建，npm 包 import 不可解析）+ 本地 SPEC-tokstats §3/§9 | `npm test`（host 管线断言）+ 重启 dsh web 目检四表 |
 | `test/`（测试套件） | 对应被测模块 + 现有用例 | `npm test` |
-| 新增插件 | README「新增插件」四步；模式参考本地 SPEC-tokprev §11；含 UI 文案的还需本文件硬规则 7（词典 ns + `locale` 声明） | 同上 |
+| 新增插件 | docs/MAINTAINING.md「新增插件」五步；模式参考本地 SPEC-tokprev §11；含 UI 文案的还需本文件硬规则 7（词典 ns + `locale` 声明） | 同上 |
 | `cordis.patch.yml` | 本文件硬规则 1 / 3 | `node scripts/check-plugin-structure.js` |
-| `package.json`（dsh 声明 / exports / files） | README「发布到 GitHub」 | link 安装后重启目检 |
+| `package.json`（dsh 声明 / exports / files） | docs/MAINTAINING.md「发布到 GitHub」 | link 安装后重启目检 |
 | SDD 文档（`docs/specs/active/`） | 本地指南 §5.4 / §7.7–7.8 + 该变更的 SPEC | 状态头字段完整 + 交叉链接可达 |
 | 纯文档 / 图片 | — | 链接可达性检查 |
 
