@@ -86,6 +86,46 @@ for (const [i, line] of clientText.split("\n").entries()) {
 	}
 }
 
+// ── I2 / AC-15：host 半边不得写盘（持久化只经官方缓存） ──
+//
+// 违规形态是「自己落一个 checkpoint 文件」，故拦的是写/改名/建目录这一组调用。
+// 只查调用形态而非 import：`readFileSync` 这类只读 API 不在本项范围，但 v0.6.0
+// 交付后 lib/index.js 连 node:fs 都不再 import——留一条 WARN 记录这一状态。
+const WRITE_CALL_RE = /\b(writeFileSync|writeFile|appendFileSync|appendFile|renameSync|rename|mkdirSync|mkdir|createWriteStream|truncateSync)\s*\(/;
+const indexPath = join(root, "lib", "index.js");
+const indexText = readFileSync(indexPath, "utf8");
+for (const [i, line] of indexText.split("\n").entries()) {
+	if (WRITE_CALL_RE.test(line)) {
+		problems.push(`lib/index.js L${i + 1}: 写盘调用 —— I2/AC-15 要求持久化只经官方 session-projection-cache，本包不得写 DSH_HOME/storages/ 下任何自有文件：${line.trim().slice(0, 80)}`);
+	}
+}
+if (!/from\s+"node:fs"/.test(indexText) && !/from\s+'node:fs'/.test(indexText)) {
+	// 不是问题，只是把「已彻底不依赖 node:fs」这一状态记下来（v0.6.0 的成果）。
+	console.log("[INFO] lib/index.js 未 import node:fs —— 持久化已完全交给官方管线（I2）");
+}
+
+// ── I1：client 半边不得持有价格/模型维度 ──
+//
+// `prices` 是已删除的配置面，任何残留都意味着成本维度没删干净。
+for (const [i, line] of clientText.split("\n").entries()) {
+	if (/\bprices\b/.test(line)) {
+		problems.push(`lib/client.js L${i + 1}: 出现 prices 字面量 —— Q6 已删除成本维度，界面不得再持有定价（I1）`);
+	}
+}
+
+// `provider` / `model` 是维度字段名。v0.6.0 分两批：第一批删 tokstats 的模型
+// 维度，第二批删 tokprev 的 TurnBadge（其文案含 "provider-reported"）。因此本项
+// 在第一批只扫 tokstats 段，批次二落地后再放宽到全文件——收敛过程而不是一步到位，
+// 避免把「第二批还没做」当成违规而让 guard 长期红着。
+const tokstatsBlock = clientText.match(/\/\/ ── plugin: tokstats[\s\S]*?(?=\/\/ ── plugin: |\/\/ ── plugin registry)/);
+if (tokstatsBlock !== null) {
+	for (const [i, line] of tokstatsBlock[0].split("\n").entries()) {
+		if (/\b(provider|model)\b/.test(line)) {
+			problems.push(`lib/client.js tokstats 段第 ${i + 1} 行: 出现 provider/model 维度 —— Q6 已删除该维度，wire 摘要与面板都不得含它（I1）`);
+		}
+	}
+}
+
 // ── 孤儿插件（注册但无 patch 行，缺 host 锚点）：提示不阻塞 ──
 const activated = new Set(rows.map((r) => r.plugin));
 for (const key of registered.keys()) {
