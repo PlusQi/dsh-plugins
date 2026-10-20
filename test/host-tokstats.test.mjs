@@ -791,3 +791,33 @@ test("零 step 与真实 step 相邻时互不干扰", () => {
 	assert.equal(zero.in, 0);
 });
 
+
+test("活会话跳过缓存：检查点滞后时不得采信（官方水位无法与日志关联）", async () => {
+	const connection = makeConnection();
+	// 缓存里有陈旧值（calls=27），但日志已长出真实值（sampleLog 两次调用）
+	const cache = makeProjectionCache({
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 6, calls: 27, in: 100, cr: 0, cw: 0, out: 1 }] } },
+	});
+	const query = makeSessionQuery([{ header: HEADER, live: true }], { [HEADER.id]: sampleLog(HEADER) });
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, true);
+	assert.equal(cache.calls.cachedSnapshot, 0, "活会话不得读缓存");
+	assert.equal(query.calls.readSession, 1, "应走冷读（活会话是内存快照）");
+	assert.equal(result.value.totals.calls, 2, "数字来自日志而非陈旧检查点");
+});
+
+test("非活会话仍走缓存（零 I/O 路径不被上一条改坏）", async () => {
+	const connection = makeConnection();
+	const cache = makeProjectionCache({
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 6, calls: 9, in: 100, cr: 0, cw: 0, out: 1 }] } },
+	});
+	const query = makeSessionQuery([{ header: HEADER, live: false }], { [HEADER.id]: sampleLog(HEADER) });
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(cache.calls.cachedSnapshot, 1, "已结束会话应命中缓存");
+	assert.equal(query.calls.readSession, 0);
+	assert.equal(result.value.totals.calls, 9);
+});
