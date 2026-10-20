@@ -1,310 +1,303 @@
 // tokstats client 半边测试：eval 真实 lib/client.js 产物，mock react + 伪
 // ctx.slots/locale 浅渲染组件树断言。公共装配见 test/client-harness.mjs。
+//
+// v0.6.0 第一批起形态是**全局面板**（sidebar.panellist + root `main` keyed slot），
+// 不再是侧栏脚按钮 + 弹层：panellist 的 id 与 main 的 key 必须一致（p0-b，否则
+// ctx.layout.selectPanel 会抛错）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
 	injectedStyleTags,
 	nodesOf,
 	textOf,
-	rowNodesOf,
 	renderDeep,
 	renderWithEffects,
 	setupClientBase,
 	assertDictPair,
+	makeRpcStub,
 } from "./client-harness.mjs";
 
-// ── react mock：createElement 出普通对象树；hooks 做最小状态机 ─────────────
+const NS = "dsh-plugins.tokstats";
+const PANEL_ID = "tokstats";
+const CHANNEL = "/dsh-plugins.tokstats";
 
 // ── 测试装配 ───────────────────────────────────────────────────────────────
 
-/** factory(react) → apply(伪 ctx) → 捕获 sidebar.footer.action 的按钮组件。 */
-function setupClient(opts) {
-	const base = setupClientBase(opts);
-	const button = base.componentOf("sidebar.footer.action");
-	assert.ok(button, "应注册 sidebar.footer.action");
-	return { ...base, button, t: base.t(NS) };
+/**
+ * factory(react) → apply(伪 ctx) → 捕获 main / sidebar.panellist 两处注册。
+ * connection 是可选的：不传即模拟「宿主无 connection 服务」，断言降级成空态。
+ * 宿主形态是 `ctx.connection.rpc.call(...)`（rpc 在 connection 子对象上），
+ * 故这里统一把桩包成 `{ rpc }`——直接传扁平桩会让「实现写错调用路径」测不出来。
+ */
+function setupClient(opts = {}) {
+	const connection = opts.rpc === undefined ? opts.connection : { rpc: opts.rpc };
+	const base = setupClientBase({ ...opts, connection });
+	const main = base.registrations.find((r) => r.opts.name === "main");
+	const list = base.registrations.find((r) => r.opts.name === "sidebar.panellist");
+	return { ...base, main, list, t: base.t(NS) };
 }
 
-/** 渲染按钮（含 effects 执行 + 一次重渲以反映 setAnchor），返回第二次树。 */
-const renderButton = (react, button, props) => renderWithEffects(react, button, props);
-
-/** 从按钮树中取出 Panel 组件引用（open=true 时才渲染）。 */
-function panelComponentOf(tree) {
-	const node = nodesOf(tree).find((n) => typeof n.type === "function" && n.type.name === "TokstatsPanel");
-	return node === undefined ? undefined : { Comp: node.type, props: node.props };
+function panelPropsOf(rpc) {
+	return { t: (key, params) => {
+		const table = {
+			"panel.title": "Token 分析",
+			"state.pending": "统计中…",
+			"range.days": "近 {count} 天",
+			"range.all": "全部",
+			"section.bucket": "上下文长度分布（按计费输入）",
+			"section.trend": "趋势（按周）",
+			"workspace.all": "全部工作区",
+			"empty.noService": "统计服务不可用，无法读取会话数据",
+			"empty.noData": "暂无数据（还没有 usage 记录）",
+			"foot.generated": "生成于 {time}",
+		};
+		const template = table[key] ?? key;
+		if (params === undefined) return template;
+		return template.replace(/\{(\w+)\}/g, (m, name) => (name in params ? String(params[name]) : m));
+	} };
 }
 
-// ── 测试数据 ───────────────────────────────────────────────────────────────
-
-function dayKeyOf(ts) {
-	const d = new Date(ts);
-	const m = String(d.getMonth() + 1).padStart(2, "0");
-	const day = String(d.getDate()).padStart(2, "0");
-	return d.getFullYear() + "-" + m + "-" + day;
-}
-const TODAY = dayKeyOf(Date.now());
-const OLD = dayKeyOf(Date.now() - 8 * 86400000);
-const W_A = "D:\\proj\\alpha";
-const W_B = "D:\\proj\\beta";
-
-function makeValue() {
+/** 一份合法的 RPC 聚合返回值（host 侧 tokstatsAggregate 的形状）。 */
+function makeSummary(overrides = {}) {
+	const buckets = [];
+	for (let i = 0; i < 7; i += 1) buckets.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
+	buckets[0] = { calls: 2, in: 1000, cr: 3000, cw: 0, out: 200 };
+	buckets[6] = { calls: 1, in: 200000, cr: 0, cw: 0, out: 50 };
 	return {
-		schema: 1,
-		complete: true,
-		generatedAt: 1787000000000,
-		prices: { "deepseek-official": { "deepseek-v4-flash": { input: 3, inputCached: 0.1, output: 9 } } },
-		cells: [
-			{ w: W_A, p: "deepseek-official", m: "deepseek-v4-flash", d: TODAY, b: 0, calls: 2, in: 1000, cr: 3000, cw: 0, out: 200 },
-			{ w: W_A, p: "third-party-x", m: "some-model", d: TODAY, b: 6, calls: 1, in: 200000, cr: 0, cw: 0, out: 50 },
-			{ w: W_B, p: "deepseek-official", m: "deepseek-v4-flash", d: OLD, b: 1, calls: 1, in: 4096, cr: 0, cw: 0, out: 10 },
+		buckets,
+		weekly: [{ weekStart: "2026-10-19", calls: 3, in: 201000, out: 250 }],
+		workspaces: [
+			{ path: "D:\\proj\\alpha", calls: 3, in: 201000, out: 250 },
+			{ path: "D:\\proj\\beta", calls: 1, in: 4096, out: 10 },
 		],
+		totals: { calls: 3, in: 201000, cr: 3000, cw: 0, out: 250 },
+		windowStart: "2026-07-23",
+		generatedAt: 1787000000000,
+		windowDays: 90,
+		...overrides,
 	};
 }
 
-const NS = "dsh-plugins.tokstats";
-
-const useSessionsOf = (snapshot) => (selector) => selector(snapshot);
+/** 渲染面板并跑掉 effects（effect 里发起 RPC），最后深度展开函数组件。 */
+async function renderPanel(react, main, props) {
+	// 第一次渲染：收集 effect（effect 里发起 RPC）。
+	main.comp(props);
+	react.runEffects();
+	// 等 RPC 兑现（setPhase / setData 落在 stateValues 上）。
+	for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+	react.reset();
+	// 第二次渲染：反映 effect 写入的状态。深度展开 TokstatsSection / TokstatsRow。
+	return renderDeep(react, main.comp(props));
+}
 
 // ── 模块 / 注册 ────────────────────────────────────────────────────────────
 
-test("client 产物：导出 { inject: [slots, locale], apply }，apply 后注册全部插件的 slot", () => {
+test("client 产物：导出 { inject: [slots, locale], apply }；tokstats 改成 panellist + main 两处注册", () => {
 	const { exportsObj, registrations } = setupClient();
 	// locale 是硬依赖（与官方 UI 包同构）：宿主无 locale 服务时整包不加载。
 	assert.deepEqual(exportsObj.inject, ["slots", "locale"]);
-	const names = registrations.map((r) => r.opts.name + "#" + r.opts.id).sort();
-	assert.deepEqual(names, [
-		"conversation.chat.assistant-actions#tok-turn-badge",
-		"conversation.composer.dock#tok-preview",
-		"conversation.input.right#promptopt-button",
-		"sidebar.footer.action#tokstats-panel",
-	]);
+	const names = registrations.map((r) => r.opts.name).sort();
+	assert.ok(names.includes("main"), "应注册 root main slot");
+	assert.ok(names.includes("sidebar.panellist"), "应注册侧栏列表项");
+	assert.ok(!names.includes("sidebar.footer.action"), "footer 按钮已删除（P11：该 slot 被官方 cordis-panel 占用）");
 });
 
-test("样式回归：面板必须 position:fixed（否则被侧栏列 overflow:hidden 裁剪、数值列不可见）", () => {
-	setupClient();
-	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats");
-	assert.ok(tag, "tokstats 样式 tag 应已注入");
-	const panelRule = tag.textContent.match(/\.dsh-tokstats-panel\{[^}]*\}/)?.[0];
-	assert.ok(panelRule, "面板 CSS 规则应存在");
-	assert.match(panelRule, /(?:^|;)position:fixed/, "position:fixed 曾在块重写时丢失——面板退化成侧栏内的普通流元素，被 pI_x6G_sidebarCol 的 overflow:hidden 裁剪（rail 态 18px 宽、展开态右侧数值列被裁）");
-	assert.match(panelRule, /width:380px/, "面板宽度声明");
+test("AC-9 / p0-b：panellist 的 id 必须等于 main 的 key（否则 selectPanel 抛错）", () => {
+	const { main, list } = setupClient();
+	assert.ok(main, "main 注册应存在");
+	assert.ok(list, "panellist 注册应存在");
+	assert.equal(main.opts.key, PANEL_ID);
+	assert.equal(list.opts.id, PANEL_ID);
+	assert.equal(main.opts.key, list.opts.id, "两处寻址键必须一致");
 });
 
-test("按钮 wide 形态：图标 + 文字标签；rail 形态仅图标", () => {
-	const { react, button, t } = setupClient();
-	const snap = { current: undefined, ids: [], byId: {} };
-	const wideTree = renderDeep(react, renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) }));
-	const wideNodes = nodesOf(wideTree);
-	assert.ok(wideNodes.some((n) => n.type === "svg"), "wide 有图标");
-	assert.ok(wideNodes.some((n) => n.props.className === "dsh-tokstats-triggerLabel" && textOf(n) === "Token 统计"), "wide 有文字标签");
-	assert.ok(wideTree.props.className.includes("dsh-tokstats-root") && !wideTree.props.className.includes("dsh-tokstats-rail"));
-
-	const railTree = renderDeep(react, renderButton(react, button, { wide: false, t, useSessions: useSessionsOf(snap) }));
-	assert.ok(railTree.props.className.includes("dsh-tokstats-rail"));
-	assert.ok(!nodesOf(railTree).some((n) => n.props.className === "dsh-tokstats-triggerLabel"), "rail 无文字标签");
-	assert.equal(panelComponentOf(railTree), undefined, "无值时不渲染面板");
+test("注册形态：label 是函数（locale 切换时侧栏重取），order 排在官方面板之后", () => {
+	const { list } = setupClient();
+	assert.equal(typeof list.opts.label, "function", "label 必须是函数：sidebar 用 resolveSlotLabel 调用它");
+	assert.equal(list.opts.label(), "Token 分析");
+	assert.equal(typeof list.opts.order, "number");
+	assert.ok(list.opts.order >= 10, "plugins=0 / schedules=10 之后，取 30");
+	assert.equal(list.opts.locale, NS, "locale 声明是 t 席位的来源");
 });
 
-// ── 面板渲染 ───────────────────────────────────────────────────────────────
-
-test("面板四表：总览三行 / 工作区 / 模型（含成本与未配价）/ 上下文桶 + 时间开关 + 估算脚注", () => {
-	const { react, button, t } = setupClient({ initialStates: [true] });
-	const value = makeValue();
-	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: value } } } };
-	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
-	assert.ok(panelComponentOf(tree), "open=true 且有值时应渲染面板");
-	// 深渲染前清空按钮占用的 state 槽：Panel 的 range useState 从默认 "total" 开始。
-	react.clearStates();
-	react.initialStates = [];
-	const panelTree = renderDeep(react, tree);
-	const rows = rowNodesOf(panelTree);
-	const rowTexts = rows.map((r) => textOf(r));
-
-	// 时间开关三档
-	const switches = nodesOf(panelTree).filter((n) => n.type === "button" && typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-switch"));
-	assert.deepEqual(switches.map((s) => textOf(s)), ["今日", "本周", "累计"]);
-	assert.ok(switches[2].props.className.includes("dsh-tokstats-switchOn"), "默认累计档");
-
-	// 总览：累计 4 次输入 205K；今日 3 次输入 201K（fmtTok(205096)="205K"）；不含计价
-	assert.ok(rowTexts.some((x) => x.startsWith("累计") && x.includes("4 次") && x.includes("205K")), "累计行");
-	assert.ok(rowTexts.some((x) => x.startsWith("今日") && x.includes("3 次") && x.includes("201K")), "今日行");
-	assert.ok(rowTexts.some((x) => x.startsWith("本周")), "本周行");
-	assert.ok(rowTexts.filter((x) => /^(今日|本周|累计)/.test(x)).every((x) => !x.includes("¥")), "总览行不含金额（计价只在按模型区）");
-
-	// 工作区：alpha（今日 输入 201K / 输出 250）与 beta（旧 输入 4.1K / 输出 10）——中文格式、无计价
-	assert.ok(rows.some((r) => textOf(r).includes("alpha") && textOf(r).includes("输入 201K") && textOf(r).includes("输出 250")), "工作区 alpha 行含输入与输出");
-	assert.ok(rows.some((r) => textOf(r).includes("beta") && textOf(r).includes("输出 10")), "工作区 beta 行含输出");
-	const wsRows = rows.filter((r) => /alpha|beta|其余/.test(textOf(r)));
-	assert.ok(wsRows.length >= 2 && wsRows.every((r) => !textOf(r).includes("¥")), "工作区行不含金额");
-
-	// 模型：官方行带输出与估算金额；第三方行未配价（同样必须有输出）
-	assert.ok(rows.some((r) => textOf(r).startsWith("deepseek-official/deepseek-v4-flash") && textOf(r).includes("输出 210") && textOf(r).includes("¥0.017")), "官方模型行含输出与估算成本");
-	assert.ok(rows.some((r) => textOf(r).startsWith("third-party-x/some-model") && textOf(r).includes("输出 50") && textOf(r).includes("未配价")), "未配价模型行含输出且显示 未配价");
-
-	// 上下文桶：7 行全渲染，b0 命中率 75%（cr 3000 / billed 4000），行值同为中文格式
-	const bucketRows = rows.filter((r) => /^\[\d+K/.test(textOf(r)) || textOf(r).startsWith("[0,4K)"));
-	assert.equal(bucketRows.length, 7, "桶表 7 行");
-	assert.ok(bucketRows.some((r) => textOf(r).startsWith("[0,4K)") && textOf(r).includes("2 次") && textOf(r).includes("输入 4.0K") && textOf(r).includes("输出 200") && textOf(r).includes("命中 75%")), "桶 0 行");
-	assert.ok(bucketRows.some((r) => textOf(r).startsWith("[128K,∞)") && textOf(r).includes("1 次")), "桶 6 行");
-
-	// 脚注估算标注
-	assert.ok(textOf(panelTree).includes("估算"), "脚注含估算标注");
+test("两处注册都声明 locale 命名空间（t 席位靠它注入）", () => {
+	const { main, list } = setupClient();
+	assert.equal(main.opts.locale, NS);
+	assert.equal(list.opts.locale, NS);
 });
 
-test("时间开关过滤：range=today 时旧日期 cell 被过滤（工作区仅 alpha）", () => {
-	const { react, button, t } = setupClient({ initialStates: [true] });
-	const value = makeValue();
-	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: value } } } };
-	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
-	react.clearStates();
-	react.initialStates = ["today"];
-	const panelTree = renderDeep(react, tree);
-	const rows = rowNodesOf(panelTree);
-	const texts = rows.map((r) => textOf(r));
-	assert.ok(texts.some((x) => x.includes("alpha")), "今日工作区 alpha 在场");
-	assert.ok(!texts.some((x) => x.includes("beta")), "8 天前的 beta 被过滤");
-	assert.ok(texts.some((x) => x.startsWith("[128K,∞)")), "今日桶 6 在场");
-	assert.ok(texts.some((x) => x.startsWith("[4K,8K)") && x.includes("—")), "今日无样本的桶显示 —");
-});
-
-test("空态：complete=false 显示统计中；complete=true 空 cells 显示暂无数据", () => {
-	const { react, button, t } = setupClient({ initialStates: [true] });
-	const scanning = { ...makeValue(), complete: false, cells: [] };
-	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: scanning } } } };
-	const tree1 = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
-	react.clearStates();
-	react.initialStates = [];
-	assert.ok(textOf(renderDeep(react, tree1)).includes("统计中"), "统计中角标/空态");
-
-	const empty = { ...makeValue(), cells: [] };
-	const snap2 = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: empty } } } };
-	const tree2 = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap2) });
-	react.clearStates();
-	react.initialStates = [];
-	assert.ok(textOf(renderDeep(react, tree2)).includes("暂无数据"), "完成态空数据显示暂无");
-});
-
-test("空态：reason=no-persistence 显示持久化不可用提示", () => {
-	const { react, button, t } = setupClient({ initialStates: [true] });
-	const noPersistence = { ...makeValue(), reason: "no-persistence", cells: [] };
-	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: noPersistence } } } };
-	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
-	react.clearStates();
-	react.initialStates = [];
-	assert.ok(textOf(renderDeep(react, tree)).includes("持久化服务不可用"));
-});
-
-// ── projection 值选择（selectTokstatsValue 语义） ──────────────────────────
-
-test("值选择：当前会话优先于列表行兜底", () => {
-	const { react, button, t } = setupClient({ initialStates: [true] });
-	const v1 = makeValue();
-	const v2 = makeValue();
-	v2.cells = [{ w: W_B, p: "p2", m: "m2", d: TODAY, b: 3, calls: 9, in: 999999, cr: 0, cw: 0, out: 9 }];
-	const snap = { current: "s1", ids: ["s1", "s2"], byId: { s1: { projectionValues: { tokstats: v1 } }, s2: { projectionValues: { tokstats: v2 } } } };
-	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
-	assert.equal(panelComponentOf(tree).props.value, v1, "当前会话的值优先");
-});
-
-test("值选择：当前会话无值时回落任一列表行", () => {
-	const { react, button, t } = setupClient({ initialStates: [true] });
-	const v2 = makeValue();
-	const snap = { current: "s1", ids: ["s1", "s2"], byId: { s1: { projectionValues: {} }, s2: { projectionValues: { tokstats: v2 } } } };
-	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
-	assert.equal(panelComponentOf(tree).props.value, v2, "回落 ids[0] 的值");
-});
-
-test("值选择：全部缺席时按钮渲染但无面板（不抛错）", () => {
-	const { react, button, t } = setupClient({ initialStates: [true] });
-	const snap = { current: "s1", ids: ["s1"], byId: { s1: {} } };
-	const tree = renderButton(react, button, { wide: true, t, useSessions: useSessionsOf(snap) });
-	assert.ok(nodesOf(tree).some((n) => n.type === "button"), "按钮仍渲染");
-	assert.equal(panelComponentOf(tree), undefined, "值缺席不渲染面板");
-});
-
-// ── 词典与语言切换 ────────────────────────────────────────────────────────
-
-test("词典：zh/en 键集完全一致（英文缺键会在界面上显示裸键）", () => {
+test("词典：zh/en 键集逐键对应（I13）", () => {
 	const { dicts } = setupClient();
 	assertDictPair(assert, NS, dicts);
 });
 
-test("注册：sidebar.footer.action 声明 locale 命名空间（t 席位靠它注入）", () => {
-	const { registrations } = setupClient();
-	assert.equal(registrations.find((r) => r.opts.id === "tokstats-panel").opts.locale, NS);
+test("词典不含成本/模型维度键（Q6 删除）", () => {
+	const { dicts } = setupClient();
+	const keys = Object.keys(dicts[NS].zh);
+	for (const banned of ["section.model", "value.model", "unit.noPrice", "unit.noPriceParen", "tip.cost", "tip.model", "tip.noPriceOnly", "tip.estimated", "foot.note", "tip.overview", "value.inOut"]) {
+		assert.ok(!keys.includes(banned), `已删除的键 ${banned} 不应残留`);
+	}
+	assert.ok(keys.includes("section.bucket"), "桶分布分区标题保留");
+	assert.ok(keys.includes("section.trend"), "新增趋势分区标题");
 });
 
-test("面板英文：分区标题 / 时间开关 / 行值 / 未配价 / 脚注全走英文模板", () => {
-	const { react, button, t } = setupClient({ initialStates: [true], locale: "en" });
-	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: makeValue() } } } };
-	const tree = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap) });
-	react.clearStates();
-	react.initialStates = [];
-	const panelTree = renderDeep(react, tree);
-	const rows = rowNodesOf(panelTree);
-	const rowTexts = rows.map((r) => textOf(r));
-
-	const switches = nodesOf(panelTree).filter((n) => n.type === "button" && typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-switch"));
-	assert.deepEqual(switches.map((s) => textOf(s)), ["Today", "This week", "All time"]);
-
-	// 总览：累计 4 次输入 205K / 今日 3 次输入 201K，且不含金额
-	assert.ok(rowTexts.some((x) => x.startsWith("All time") && x.includes("4 calls") && x.includes("205K")), "All time 行");
-	assert.ok(rowTexts.some((x) => x.startsWith("Today") && x.includes("3 calls") && x.includes("201K")), "Today 行");
-	assert.ok(rowTexts.filter((x) => /^(Today|This week|All time)/.test(x)).every((x) => !x.includes("¥")), "总览行不含金额");
-
-	// 工作区与模型：英文语序（in / out 在前）
-	assert.ok(rows.some((r) => textOf(r).includes("alpha") && textOf(r).includes("201K in") && textOf(r).includes("250 out")), "alpha 行");
-	assert.ok(rows.some((r) => textOf(r).startsWith("deepseek-official/deepseek-v4-flash") && textOf(r).includes("210 out") && textOf(r).includes("¥0.017")), "官方模型行含估算成本");
-	assert.ok(rows.some((r) => textOf(r).startsWith("third-party-x/some-model") && textOf(r).includes("50 out") && textOf(r).includes("no price")), "未配价模型行");
-
-	// 桶表：命中率措辞为 cached
-	assert.ok(rowTexts.some((x) => x.startsWith("[0,4K)") && x.includes("2 calls") && x.includes("4.0K in") && x.includes("200 out") && x.includes("75% cached")), "桶 0 行");
-
-	// 脚注：估算标注 + 固定 24 小时制时钟（不跟浏览器 locale）
-	assert.match(textOf(panelTree), /generated at \d{2}:\d{2}:\d{2}/, "脚注时间与语言无关");
+test("I1：client 产物无 prices 字面量（成本维度已整体删除）", () => {
+	const { exportsObj } = setupClient();
+	assert.ok(exportsObj !== undefined);
+	// 直接读产物文本：词典与组件里都不该再出现 prices。
+	const text = injectedStyleTags.map((t) => t.textContent).join("");
+	assert.ok(!text.includes("prices"));
 });
 
-test("英文：复数分形（1 call / 2 calls）落在桶行上", () => {
-	const { react, button, t } = setupClient({ initialStates: [true], locale: "en" });
-	const snap = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: makeValue() } } } };
-	const tree = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap) });
-	react.clearStates();
-	react.initialStates = [];
-	const texts = rowNodesOf(renderDeep(react, tree)).map((r) => textOf(r));
-	// cell1 桶 0 两次调用；cell3 桶 1 一次调用
-	assert.ok(texts.some((x) => x.startsWith("[0,4K)") && x.includes("2 calls")), "桶 0 复数");
-	assert.ok(texts.some((x) => x.startsWith("[4K,8K)") && x.includes("1 call") && !x.includes("1 calls")), "桶 1 单数");
+// ── 样式 ───────────────────────────────────────────────────────────────────
+
+test("样式回归：全局面板是页面级容器，且不再有弹层的 position:fixed", () => {
+	setupClient();
+	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats");
+	assert.ok(tag, "tokstats 样式 tag 应已注入");
+	assert.match(tag.textContent, /\.dsh-tokstats-page\{/, "页面级容器规则应存在");
+	assert.match(tag.textContent, /height:100%/, "全局面板撑满主区");
+	assert.ok(!/position:fixed/.test(tag.textContent), "弹层定位（fixed + anchor）已随旧实现删除");
 });
 
-test("面板英文：空态与扫描中", () => {
-	const { react, button, t } = setupClient({ initialStates: [true], locale: "en" });
-	const scanning = { ...makeValue(), complete: false, cells: [] };
-	const snap1 = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: scanning } } } };
-	const tree1 = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap1) });
-	react.clearStates();
-	react.initialStates = [];
-	assert.ok(textOf(renderDeep(react, tree1)).includes("Scanning"), "扫描中角标");
-
-	const empty = { ...makeValue(), cells: [] };
-	const snap2 = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: empty } } } };
-	const tree2 = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap2) });
-	react.clearStates();
-	react.initialStates = [];
-	assert.ok(textOf(renderDeep(react, tree2)).includes("No data yet"), "完成态空数据");
-
-	const noPersistence = { ...makeValue(), reason: "no-persistence", cells: [] };
-	const snap3 = { current: "s1", ids: ["s1"], byId: { s1: { projectionValues: { tokstats: noPersistence } } } };
-	const tree3 = renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap3) });
-	react.clearStates();
-	react.initialStates = [];
-	assert.ok(textOf(renderDeep(react, tree3)).includes("Persistence unavailable"), "持久化不可用");
+test("每插件样式 tag 独立（硬规则 4）", () => {
+	// injectedStyleTags 是模块级累积数组：先清掉别的用例注入的，只看本次 apply。
+	injectedStyleTags.length = 0;
+	setupClient();
+	const tags = injectedStyleTags.filter((t) => t.dataset.pluginCss !== undefined);
+	assert.equal(tags.length, 3, "三个插件各一个 tag");
+	const ids = new Set(tags.map((t) => t.dataset.pluginCss));
+	assert.equal(ids.size, tags.length, "同一 id 不应重复注入");
+	assert.ok(ids.has("dsh-plugins/tokstats"));
 });
 
-test("按钮英文：wide 标签与 aria 走词典", () => {
-	const { react, button, t } = setupClient({ locale: "en" });
-	const snap = { current: undefined, ids: [], byId: {} };
-	const tree = renderDeep(react, renderButton(react, button, { t, wide: true, useSessions: useSessionsOf(snap) }));
-	assert.ok(nodesOf(tree).some((n) => n.props.className === "dsh-tokstats-triggerLabel" && textOf(n) === "Token stats"), "英文标签");
-	const trigger = nodesOf(tree).find((n) => n.type === "button");
-	assert.equal(trigger.props["aria-label"], "Cross-session token statistics");
+// ── 数据通道 ───────────────────────────────────────────────────────────────
+
+test("面板打开时发一次 RPC（channel / endpoint / 缺省窗口）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.equal(rpc.calls.length, 1, "打开即拉一次");
+	assert.equal(rpc.calls[0].channel, CHANNEL);
+	assert.equal(rpc.calls[0].endpoint, "summary");
+	assert.equal(rpc.calls[0].payload.windowDays, 90, "缺省 90 天");
+	assert.equal(rpc.calls[0].payload.workspace, undefined, "未选工作区时不传该字段");
+	assert.ok(tree !== null);
 });
+
+test("AC-9：桶分布 7 行全渲染，非零桶显示数值、零桶显示破折号", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const nodes = nodesOf(tree);
+	const labels = nodes.filter((n) => typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-rowLabel")).map((n) => textOf(n));
+	for (const bucket of ["[0,4K)", "[4K,8K)", "[8K,16K)", "[16K,32K)", "[32K,64K)", "[64K,128K)", "[128K,∞)"]) {
+		assert.ok(labels.includes(bucket), `桶 ${bucket} 应有一行`);
+	}
+	const dim = nodes.filter((n) => typeof n.props.className === "string" && /dsh-tokstats-dim/.test(n.props.className));
+	assert.equal(dim.length, 5, "零桶行加 dim（5 个空桶）");
+	assert.ok(textOf(tree).includes("—"), "零桶显示破折号");
+});
+
+test("AC-9：趋势分区渲染周行", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const text = textOf(tree);
+	assert.ok(text.includes("趋势（按周）"), "趋势分区标题");
+	assert.ok(text.includes("10/19"), "周起点按 M/D 显示");
+	assert.ok(text.includes("3 次"), "周行带调用次数");
+});
+
+test("AC-9：工作区切换器出现且含「全部工作区」与各项", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const select = nodesOf(tree).find((n) => n.type === "select");
+	assert.ok(select, "工作区切换器应渲染");
+	const options = nodesOf(select).filter((n) => n.type === "option").map((n) => n.props.value);
+	assert.deepEqual(options, ["", "D:\\proj\\alpha", "D:\\proj\\beta"]);
+	assert.ok(textOf(select).includes("全部工作区"));
+});
+
+test("切换窗口：每个档位各发一次请求（90 / 30 / 全部=0）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const props = { t };
+	let tree = main.comp(props);
+	react.runEffects();
+	await new Promise((r) => setImmediate(r));
+	assert.equal(rpc.calls.length, 1);
+
+	// 找到「全部」按钮并点击 → 触发 setWindowDays(0)，重渲染后 effect 再发一次。
+	react.reset();
+	const buttons = nodesOf(tree).filter((n) => n.type === "button" && typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-switch"));
+	assert.equal(buttons.length, 3, "三个窗口档位");
+	buttons[2].props.onClick();
+	react.reset();
+	tree = main.comp(props);
+	react.runEffects();
+	await new Promise((r) => setImmediate(r));
+	assert.equal(rpc.calls.length, 2, "切档各发一次");
+	assert.equal(rpc.calls[1].payload.windowDays, 0, "「全部」档发 0");
+});
+
+test("降级：connection 缺席时显示空态文案，不抛错（I8）", async () => {
+	const { react, main, t } = setupClient({ connection: undefined });
+	assert.doesNotThrow(() => main.comp({ t }));
+	const tree = await renderPanel(react, main, { t });
+	assert.ok(textOf(tree).includes("统计服务不可用"), "无 connection 时显示服务不可用");
+});
+
+test("降级：RPC 返回 ok:false 时显示空态，不抛错", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: false, error: { code: "model-unavailable", message: "x", details: {} } }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.ok(textOf(tree).includes("统计服务不可用"));
+});
+
+test("降级：传输抛异常时显示空态，不抛错", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => { throw new Error("network down"); });
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.ok(textOf(tree).includes("统计服务不可用"));
+});
+
+test("空数据：buckets 全零时显示「暂无数据」", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ buckets: Array.from({ length: 7 }, () => ({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 })), weekly: [], workspaces: [] }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.ok(textOf(tree).includes("暂无数据"));
+});
+
+test("页脚：显示生成时刻（固定 24 小时制）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const foot = nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-foot");
+	assert.ok(foot, "页脚应渲染");
+	assert.match(textOf(foot), /生成于 \d{2}:\d{2}:\d{2}/, "固定 24 小时制 HH:MM:SS");
+});
+
+test("不渲染模型表与成本列（Q6 已删）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const text = textOf(tree);
+	assert.ok(!text.includes("按模型"), "无模型分区");
+	assert.ok(!text.includes("¥"), "无金额");
+	assert.ok(!text.includes("未配价"), "无未配价标注");
+});
+
+
+

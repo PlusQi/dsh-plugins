@@ -1,878 +1,708 @@
-// tokstats host 半边测试：伪 cordis ctx + 伪 persistence，走 lib/index.js 的
-// 真实 apply 管线（纯函数不单独导出，经管线输出反推——测的就是真实入口）。
-// 零依赖：node:test + node:assert（AGENTS 硬规则 5）。
+// tokstats host 半边测试（v0.6.0 第一批）：投影单元 + 汇总 RPC。
+//
+// 两层覆盖：
+// 1. 纯函数直跑（tks-1a…1d 的判据是「无 cordis，node 直跑可测」）——折叠、落桶、
+//    E1 折叠、聚合都从 lib/index.js 直接 import；
+// 2. 真实 apply 管线（伪 cordis ctx + 伪 sessionQuery / sessionProjectionCache /
+//    connection）——测的就是宿主实际走的那条路径。
+//
+// 桩的保真度纪律沿用既有做法：伪服务只暴露真实服务面内的成员，面外调用直接抛错
+// ——桩比真实宿主宽松时，缺陷会以「全绿」伪装过去。零依赖（AGENTS 硬规则 5）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
-const mod = await import("../lib/index.js");
+import {
+	apply,
+	tokstatsAggregate,
+	tokstatsBucketOf,
+	tokstatsDayKey,
+	tokstatsDefinition,
+	tokstatsEpochFold,
+	tokstatsFoldUsage,
+	tokstatsInit,
+	tokstatsRootWorkspaceOf,
+	tokstatsSummaryOf,
+	tokstatsWeekStartOf,
+	tokstatsWindowStart,
+	TOKSTATS_KEY,
+	TOKSTATS_STATE_VERSION,
+	TOKSTATS_BUCKET_COUNT,
+	TOKSTATS_CHANNEL,
+	TOKSTATS_ENDPOINT,
+} from "../lib/index.js";
 
-// ── 伪事件 / fixture 构造 ─────────────────────────────────────────────────
-
-/** 独立 seq 计数的事件构造器（每份日志从 seq 0 连续编号）。 */
-function makeLog() {
-	let s = -1;
-	return (type, time, data) => {
-		s += 1;
-		return { type, seq: s, time, data };
-	};
-}
+// ── fixture ────────────────────────────────────────────────────────────────
 
 /** 本地时区 2026-08-26（周三）的指定时刻。 */
-const T = (h, m) => new Date(2026, 7, 26, h, m, 0).getTime();
+const T = (d, h, m) => new Date(2026, 7, d, h, m, 0).getTime();
 const D1 = "2026-08-26";
-const D2 = "2026-08-25";
 
-function rootEvents(log) {
-	return [
-		log("session/start", T(10, 0), {}),
-		log("request/header", T(10, 0), { header: { config: { provider: "deepseek-official", model: "deepseek-v4-flash" } } }),
-		log("turn/start", T(10, 0), { turn: 1 }),
-		// usage chunk 采样（将被同 (turn,step) 的 message.usage 终值替换）
-		log("assistant/chunk", T(10, 0), { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 1000, outputTokens: 50 } } }),
-		log("assistant/message", T(10, 0), { turn: 1, step: 1, message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } }, usage: { inputTokens: 1000, outputTokens: 60 } }),
-		// content-less 失败调用：只有 usage chunk、无 message → 归因回落 request/header
-		log("assistant/chunk", T(10, 1), { turn: 1, step: 2, chunk: { type: "usage", usage: { inputTokens: 500, outputTokens: 10, cacheReadTokens: 200 } } }),
-		// 第三方模型调用（message.source 归因）
-		log("assistant/message", T(11, 0), { turn: 1, step: 3, message: { source: { kind: "model", provider: "third-party-x", model: "some-model" } }, usage: { inputTokens: 200000, outputTokens: 30 } }),
-		// 跨日：昨天 23:59 的调用
-		log("assistant/message", new Date(2026, 7, 25, 23, 59, 0).getTime(), { turn: 1, step: 4, message: { source: { kind: "model", provider: "third-party-x", model: "some-model" } }, usage: { inputTokens: 8192, outputTokens: 5 } }),
+const W_ALPHA = "D:\\proj\\alpha";
+const W_BETA = "D:\\proj\\beta";
+const HEADER = { id: "s-root", version: 4, createdAt: 1, cwd: W_ALPHA, isSeeded: false };
+
+/** usage chunk 事件。 */
+function chunkEvent(seq, time, turn, step, usage) {
+	return { type: "assistant/chunk", seq, time, data: { turn, step, chunk: { type: "usage", usage } } };
+}
+
+/** assistant/message 事件（可带 usage 终值）。 */
+function messageEvent(seq, time, turn, step, usage) {
+	return { type: "assistant/message", seq, time, data: { turn, step, ...(usage === undefined ? {} : { usage }) } };
+}
+
+/** 把一串事件折进新状态（模拟注册表的驱动方式：逐事件 apply）。 */
+function fold(events, { seed = 0, windowDays = 90, header = HEADER } = {}) {
+	let state = tokstatsInit(header, seed);
+	for (const ev of events) state = tokstatsFoldUsage(state, ev, windowDays);
+	return state;
+}
+
+// ── 阶段 1：纯函数 ─────────────────────────────────────────────────────────
+
+test("I6 / AC-4：无关事件返回同一引用（Object.is 成立）", () => {
+	let state = tokstatsInit(HEADER, 0);
+	const same = state;
+	for (const ev of [
+		{ type: "turn/start", seq: 0, time: T(26, 10, 0), data: { turn: 1 } },
+		{ type: "turn/end", seq: 1, time: T(26, 10, 0), data: { turn: 1, reason: { kind: "completed" } } },
+		{ type: "step/start", seq: 2, time: T(26, 10, 0), data: { turn: 1, step: 1 } },
+		{ type: "tool/call", seq: 3, time: T(26, 10, 0), data: { turn: 1, step: 1, callId: "c", name: "x", arguments: "{}" } },
+		{ type: "assistant/chunk", seq: 4, time: T(26, 10, 0), data: { turn: 1, step: 1, chunk: { type: "text-delta", text: "hi" } } },
+		{ type: "assistant/message", seq: 5, time: T(26, 10, 0), data: { turn: 1, step: 1 } },
+	]) {
+		const next = tokstatsFoldUsage(state, ev, 90);
+		assert.equal(Object.is(state, next), true, `${ev.type} 应返回同一引用（I6）`);
+		state = next;
+	}
+	assert.equal(Object.is(same, state), true);
+});
+
+test("I5 / AC-3：同 (turn,step) 终值替换，chunk 50 后接 message 60 → 终值 60", () => {
+	const state = fold([
+		chunkEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 50 }),
+		messageEvent(1, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 60 }),
+	]);
+	assert.equal(state.rows.length, 1, "同一 (turn,step) 只应留一格");
+	assert.equal(state.rows[0].calls, 1, "不得双计");
+	assert.equal(state.rows[0].out, 60, "终值必须替换成 60");
+	assert.equal(state.rows[0].in, 1000);
+});
+
+test("I5：递进采样（多个 usage chunk）只留最后一个", () => {
+	const state = fold([
+		chunkEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 500, outputTokens: 10 }),
+		chunkEvent(1, T(26, 10, 0), 1, 1, { inputTokens: 500, outputTokens: 20 }),
+		chunkEvent(2, T(26, 10, 0), 1, 1, { inputTokens: 500, outputTokens: 30 }),
+	]);
+	assert.equal(state.rows.length, 1);
+	assert.equal(state.rows[0].calls, 1);
+	assert.equal(state.rows[0].out, 30);
+});
+
+test("I5：终值替换跨桶时旧格被正确减回（不残留空格）", () => {
+	// chunk 落在 [0,4K)，message 终值 200000 落在 [128K,∞)：减旧加新必须把旧格清掉。
+	const state = fold([
+		chunkEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 10 }),
+		messageEvent(1, T(26, 10, 0), 1, 1, { inputTokens: 200000, outputTokens: 20 }),
+	]);
+	assert.equal(state.rows.length, 1, "旧桶的空格必须被剔除");
+	assert.equal(state.rows[0].b, 6, "终值落在最高桶");
+	assert.equal(state.rows[0].calls, 1);
+});
+
+test("I4 / AC-2：fork seed 前缀不双计（inheritedEventCount=6）", () => {
+	const events = [
+		// seq 0..5 是父会话继承来的前缀
+		messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 5000, outputTokens: 100 }),
+		messageEvent(1, T(26, 10, 0), 1, 2, { inputTokens: 5000, outputTokens: 100 }),
+		messageEvent(2, T(26, 10, 0), 1, 3, { inputTokens: 5000, outputTokens: 100 }),
+		messageEvent(3, T(26, 10, 0), 1, 4, { inputTokens: 5000, outputTokens: 100 }),
+		messageEvent(4, T(26, 10, 0), 1, 5, { inputTokens: 5000, outputTokens: 100 }),
+		messageEvent(5, T(26, 10, 0), 1, 6, { inputTokens: 5000, outputTokens: 100 }),
+		// seq 6 起是子会话自己的
+		messageEvent(6, T(26, 11, 0), 2, 1, { inputTokens: 1000, outputTokens: 7 }),
+		messageEvent(7, T(26, 11, 0), 2, 2, { inputTokens: 1000, outputTokens: 9 }),
 	];
+	const state = fold(events, { seed: 6 });
+	assert.equal(state.rows.length, 1);
+	assert.equal(state.rows[0].calls, 2, "只计子会话自身的新增 step");
+	assert.equal(state.rows[0].out, 16);
+});
+
+test("I4：seed 为 0 时全部计入（非 fork 会话）", () => {
+	const state = fold([
+		messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 1 }),
+		messageEvent(1, T(26, 10, 0), 1, 2, { inputTokens: 1000, outputTokens: 2 }),
+	], { seed: 0 });
+	assert.equal(state.rows[0].calls, 2);
+});
+
+test("桶边界：2 的幂对数桶（4096 / 8192 / 200000 三点必测）", () => {
+	assert.equal(TOKSTATS_BUCKET_COUNT, 7);
+	assert.equal(tokstatsBucketOf(0), 0);
+	assert.equal(tokstatsBucketOf(4095), 0);
+	assert.equal(tokstatsBucketOf(4096), 1);
+	assert.equal(tokstatsBucketOf(8191), 1);
+	assert.equal(tokstatsBucketOf(8192), 2);
+	assert.equal(tokstatsBucketOf(16384), 3);
+	assert.equal(tokstatsBucketOf(32768), 4);
+	assert.equal(tokstatsBucketOf(65536), 5);
+	assert.equal(tokstatsBucketOf(131072), 6);
+	assert.equal(tokstatsBucketOf(200000), 6);
+});
+
+test("桶落点在 fold 里用 in+cr+cw 之和（缓存读也计入计费输入）", () => {
+	// in 1000 + cr 70000 → 71000 → 桶 5
+	const state = fold([messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, cacheReadTokens: 70000, outputTokens: 5 })]);
+	assert.equal(state.rows[0].b, 5);
+});
+
+test("日键按本地时区自然日：23:59 与 00:01 分属两日", () => {
+	assert.equal(tokstatsDayKey(new Date(2026, 7, 25, 23, 59, 0).getTime()), "2026-08-25");
+	assert.equal(tokstatsDayKey(new Date(2026, 7, 26, 0, 1, 0).getTime()), D1);
+	const state = fold([
+		messageEvent(0, new Date(2026, 7, 25, 23, 59, 0).getTime(), 1, 1, { inputTokens: 100, outputTokens: 1 }),
+		messageEvent(1, new Date(2026, 7, 26, 0, 1, 0).getTime(), 1, 2, { inputTokens: 100, outputTokens: 1 }),
+	]);
+	assert.equal(state.rows.length, 2, "跨日应落两格");
+});
+
+test("I7 / AC-5：E1 折叠不删原始明细，且汇总数字与折叠前一致", () => {
+	// 两格都早于 30 天窗口（today=2026-10-20 → windowStart=2026-09-21），会全部进 epoch。
+	const state = fold([
+		messageEvent(0, T(1, 10, 0), 1, 1, { inputTokens: 4000, outputTokens: 7 }),
+		messageEvent(1, T(20, 10, 0), 1, 2, { inputTokens: 4000, outputTokens: 11 }),
+	]);
+	const rowsBefore = state.rows.length;
+	const epoch = tokstatsEpochFold(state, "2026-10-20", 30);
+	assert.equal(epoch.rows.length, rowsBefore, "折叠不得删改原始明细（I7）");
+	// 计费输入 4000 < 4096 → 桶 0
+	assert.equal(epoch.epoch.buckets[0].calls, 2, "窗口外的两格都折进 epoch 的桶 0");
+	assert.equal(epoch.epoch.buckets[0].out, 18);
+
+	const before = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary: tokstatsSummaryOf(state) }], { windowDays: 0, today: "2026-10-20" });
+	const after = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary: tokstatsSummaryOf({ ...state, epoch: epoch.epoch, w: state.w, rows: state.rows }) }], { windowDays: 0, today: "2026-10-20" });
+	assert.deepEqual(after.buckets, before.buckets, "折叠前后各桶数字必须逐项一致（AC-5）");
+	assert.equal(after.totals.calls, before.totals.calls);
+	assert.equal(after.totals.out, before.totals.out);
+});
+
+test("E1 折叠幂等：同一 today 重复折叠返回同一引用", () => {
+	const state = tokstatsEpochFold(fold([messageEvent(0, T(1, 10, 0), 1, 1, { inputTokens: 4000 })]), "2026-10-20", 30);
+	const again = tokstatsEpochFold(state, "2026-10-20", 30);
+	assert.equal(Object.is(state, again), true);
+});
+
+test("windowStart / weekStartOf：日键算术只走 UTC 解析，不随宿主时区漂移", () => {
+	assert.equal(tokstatsWindowStart(0, "2026-10-20"), null);
+	assert.equal(tokstatsWindowStart(1, "2026-10-20"), "2026-10-20");
+	assert.equal(tokstatsWindowStart(30, "2026-10-20"), "2026-09-21");
+	assert.equal(tokstatsWeekStartOf("2026-10-20"), "2026-10-19", "2026-10-20 是周二，周一为 10-19");
+	assert.equal(tokstatsWeekStartOf("2026-10-19"), "2026-10-19", "周一归自身");
+	assert.equal(tokstatsWeekStartOf("2026-10-25"), "2026-10-19", "周日归上一个周一");
+});
+
+test("聚合：窗口过滤 + 工作区分组 + 周趋势分组", () => {
+	const summary = {
+		w: W_ALPHA,
+		e: null,
+		rows: [
+			{ d: "2026-10-19", b: 6, calls: 2, in: 200000, cr: 0, cw: 0, out: 10 },
+			{ d: "2026-10-20", b: 5, calls: 1, in: 70000, cr: 0, cw: 0, out: 5 },
+			{ d: "2026-06-01", b: 0, calls: 3, in: 100, cr: 0, cw: 0, out: 1 },
+		],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 30, today: "2026-10-20" });
+	assert.equal(result.windowStart, "2026-09-21");
+	assert.equal(result.totals.calls, 3, "窗口外的 2026-06-01 不计");
+	assert.equal(result.buckets[6].calls, 2);
+	assert.equal(result.buckets[5].calls, 1);
+	assert.equal(result.buckets[0].calls, 0);
+	assert.equal(result.weekly.length, 1, "两周内三格落在同一自然周");
+	assert.equal(result.weekly[0].weekStart, "2026-10-19");
+	assert.equal(result.workspaces.length, 1);
+	assert.equal(result.workspaces[0].path, W_ALPHA);
+	assert.equal(result.workspaces[0].calls, 3);
+});
+
+test("聚合：workspace 过滤只留匹配的会话", () => {
+	const a = { w: "a", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] };
+	const b = { w: "b", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1 }] };
+	const all = tokstatsAggregate([
+		{ rootWorkspace: "a", summary: a },
+		{ rootWorkspace: "b", summary: b },
+	], { windowDays: 90, today: "2026-10-20" });
+	assert.equal(all.totals.calls, 3);
+	const onlyB = tokstatsAggregate([
+		{ rootWorkspace: "a", summary: a },
+		{ rootWorkspace: "b", summary: b },
+	], { windowDays: 90, today: "2026-10-20", workspace: "b" });
+	assert.equal(onlyB.totals.calls, 2);
+	assert.deepEqual(onlyB.workspaces.map((w) => w.path), ["b"]);
+});
+
+test("聚合：summary 为 undefined 的会话被跳过（不抛错）", () => {
+	const result = tokstatsAggregate([
+		{ rootWorkspace: "a", summary: undefined },
+		{ rootWorkspace: "b", summary: { w: "b", e: null, rows: [] } },
+	], { windowDays: 90, today: "2026-10-20" });
+	assert.equal(result.totals.calls, 0);
+	assert.deepEqual(result.workspaces, []);
+});
+
+test("根工作区：沿 parentSession 链上溯到顶层 cwd；链断归 _orphan", () => {
+	const headers = new Map([
+		["root", { id: "root", cwd: W_ALPHA }],
+		["child", { id: "child", cwd: W_ALPHA, parentSession: "root" }],
+	]);
+	assert.equal(tokstatsRootWorkspaceOf({ id: "child", cwd: W_ALPHA, parentSession: "root" }, headers), W_ALPHA);
+	assert.equal(tokstatsRootWorkspaceOf({ id: "lost", parentSession: "missing" }, headers), "_orphan");
+	assert.equal(tokstatsRootWorkspaceOf({ id: "nocwd" }, headers), "_orphan");
+	assert.equal(tokstatsRootWorkspaceOf({ id: "root", cwd: W_BETA }, headers), W_BETA);
+});
+
+test("I1：wire.view 键集只有 w / e / rows，不含 provider / model / 价格字段", () => {
+	const def = tokstatsDefinition(90);
+	const state = fold([messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 5 })]);
+	const view = def.wire.view(state);
+	assert.deepEqual(Object.keys(view).sort(), ["e", "rows", "w"]);
+	for (const cell of view.rows) {
+		assert.deepEqual(Object.keys(cell).sort(), ["b", "calls", "cr", "cw", "d", "in", "out"], "cell 不得含 provider/model");
+	}
+});
+
+test("单元定义：key / stateVersion 2 / init / apply / wire 齐备", () => {
+	const def = tokstatsDefinition(90);
+	assert.equal(def.key, TOKSTATS_KEY);
+	assert.equal(def.stateVersion, TOKSTATS_STATE_VERSION);
+	assert.equal(TOKSTATS_STATE_VERSION, 2, "由 1 提升，旧缓存行据此作废（P5）");
+	assert.equal(typeof def.init, "function");
+	assert.equal(typeof def.apply, "function");
+	assert.ok(def.wire !== undefined, "必须带 wire（host-only 单元读不回来）");
+	assert.equal(typeof def.wire.view, "function");
+	assert.equal(typeof def.stateSchema.parse, "function");
+	assert.equal(typeof def.wire.viewSchema.parse, "function");
+});
+
+test("init 从 header 取 cwd；缺 cwd 归 _orphan；seed 取自 inheritedEventCount", () => {
+	assert.equal(tokstatsInit(HEADER, 0).w, W_ALPHA);
+	assert.equal(tokstatsInit({ id: "x" }, 0).w, "_orphan");
+	assert.equal(tokstatsInit(null, 0).w, "_orphan");
+	assert.equal(tokstatsInit(HEADER, 6).seed, 6);
+	assert.equal(tokstatsInit(HEADER, 0).seed, 0);
+	assert.equal(tokstatsInit(HEADER, 6).epoch, null);
+	assert.deepEqual(tokstatsInit(HEADER, 0).rows, []);
+});
+
+test("apply 用 state.seed 做 fork 去重（apply 只收 state/event，拿不到 inheritedEventCount）", () => {
+	const def = tokstatsDefinition(90);
+	let state = def.init(HEADER, 3);
+	state = def.apply(state, messageEvent(2, T(26, 10, 0), 1, 1, { inputTokens: 100, outputTokens: 1 }));
+	assert.deepEqual(state.rows, [], "seed 前缀内的样本应被跳过");
+	state = def.apply(state, messageEvent(3, T(26, 10, 0), 1, 2, { inputTokens: 100, outputTokens: 1 }));
+	assert.equal(state.rows.length, 1);
+});
+
+test("I1：摘要只认 w / e / rows 三键（provider/model 字段一律不带出）", () => {
+	const summary = tokstatsSummaryOf({ w: "a", e: null, rows: [{ d: D1, b: 0, calls: 1, in: 1, cr: 0, cw: 0, out: 1, p: "x", m: "y" }] });
+	assert.deepEqual(Object.keys(summary).sort(), ["e", "rows", "w"]);
+	assert.equal(tokstatsSummaryOf(undefined), undefined);
+	assert.equal(tokstatsSummaryOf({ rows: "nope" }), undefined);
+	assert.equal(tokstatsSummaryOf(null), undefined);
+});
+
+// ── 阶段 2：单元注册 / 汇总 / 降级 ──────────────────────────────────────────
+
+/**
+ * 伪 `ctx.sessionQuery`：只暴露真实服务面内本插件会用的成员
+ * （listSessions / readSession），面外调用抛错——桩比宿主宽松会让用错 API 的实现
+ * 也全绿。
+ */
+function makeSessionQuery(records, logsById) {
+	const calls = { listSessions: 0, readSession: 0 };
+	const stub = {
+		calls,
+		async listSessions() {
+			calls.listSessions += 1;
+			return records;
+		},
+		async readSession(id) {
+			calls.readSession += 1;
+			const log = logsById[id];
+			if (log === undefined) throw new Error("not found: " + id);
+			return { session: log.header, inheritedEventCount: log.inheritedEventCount ?? 0, events: log.events };
+		},
+	};
+	return new Proxy(stub, {
+		get(obj, key) {
+			// `then` 是引擎的 thenable 探测，不是插件在调方法。
+			if (key === "then") return undefined;
+			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
+			throw new Error(`tokstats 调了 sessionQuery.${String(key)}：真实服务面上没有这个方法`);
+		},
+	});
 }
 
 /**
- * 真实 `ctx.sessionPersistence` 的公开面（`SessionPersistence` 抽象类；
- * dsh-session-persistence 0.1.1-rc.2 与 0.1.2-alpha.3 一致）。
- * 桩只能提供这个集合内的方法：多提供一个，就等于给「调了宿主没有的方法」这类
- * 缺陷发通行证——2026-09-01 的 `readStoredRevision` 正是靠桩自己造出来才全绿。
+ * 伪 `ctx.sessionProjectionCache`：cachedSnapshot / coldSnapshot 两个读面。
+ * coldSnapshot 真的把日志折一遍（走同一套纯函数），这样「冷折叠兜底」测的是真实
+ * 折叠语义而不是桩返回的常量。
  */
-const SESSION_PERSISTENCE_SURFACE = [
-	"locate", "supportsRawArtifacts", "readRaw", "create", "append",
-	"prepare", "load", "inspect", "readFrom", "list", "listSnapshots",
-];
+function makeProjectionCache(cachedById) {
+	const calls = { cachedSnapshot: 0, coldSnapshot: 0 };
+	const stub = {
+		calls,
+		cachedSnapshot(meta, keys) {
+			calls.cachedSnapshot += 1;
+			const keyed = cachedById[meta.id];
+			if (keyed === undefined) return undefined;
+			const values = {};
+			for (const key of keys ?? []) {
+				if (keyed[key] !== undefined) values[key] = keyed[key];
+			}
+			return Object.keys(values).length === 0 ? undefined : { asOfSeq: 0, values };
+		},
+		coldSnapshot(meta, inheritedEventCount, events) {
+			calls.coldSnapshot += 1;
+			let state = tokstatsInit(meta, inheritedEventCount);
+			for (const event of events) state = tokstatsFoldUsage(state, event, 90);
+			return { asOfSeq: -1, values: { [TOKSTATS_KEY]: tokstatsDefinition(90).wire.view(state) } };
+		},
+	};
+	return new Proxy(stub, {
+		get(obj, key) {
+			if (key === "then") return undefined;
+			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
+			throw new Error(`tokstats 调了 sessionProjectionCache.${String(key)}：真实服务面上没有这个方法`);
+		},
+	});
+}
+
+/** 伪 connection：捕获 rpc.handle 的注册参数，并可事后驱动 handler。 */
+function makeConnection() {
+	const registrations = [];
+	return {
+		registrations,
+		rpc: {
+			handle(channel, handler, ...rest) {
+				registrations.push({ channel, handler, rest });
+				return () => Promise.resolve();
+			},
+		},
+		async invoke(endpoint, payload, index = 0) {
+			const entry = registrations[index];
+			if (entry === undefined) throw new Error(`尚无第 ${index} 个 RPC 注册`);
+			return entry.handler(endpoint, payload);
+		},
+	};
+}
 
 /**
- * 伪 persistence：可配置的快照集 + 调用计数（inspect 计数用于对账断言）。
- * 读面外的方法名直接抛错：桩比真实宿主宽松时，缺陷会以「全绿」伪装过去。
- * headersById 供「有日志但不在快照表」的活会话补折场景给 inspect 兜 meta。
+ * 伪 cordis ctx：inject 只在**全部**依赖到齐时回调（对齐 cordis 语义）；缺席的
+ * 服务让回调永不触发——这正是被测代码要扛住的降级路径。
  *
- * `list` 如实建模 rc.2 语义（返回不含 revision 的 `SessionHeader[]`）并计数：
- * 0.1.3-alpha.2 起同名方法改成返回带 revision 的快照，实现若图省事把
- * `listSnapshots()` 直接改名为 `list()`，在 rc.2 上会静默丢掉全部 revision——
- * 有计数就能把这条钉死。
+ * `sessionProjectionCache` 刻意**不**出现在 inject 名单里：实现用 `ctx.get` 惰性
+ * 取它（inject 是「齐备才回调」，写进去会让缓存缺席时端点也不注册）。所以桩必须
+ * 提供 `get`，且只认已被注入的服务名——凭空返回未注册服务等于给「用了宿主没有
+ * 的服务」发通行证。
  */
-function makePersistence(snapshots, logsById, headersById) {
-	const calls = { listSnapshots: 0, inspect: 0, list: 0 };
-	const stub = {
-		calls,
-		async listSnapshots() {
-			calls.listSnapshots += 1;
-			return snapshots;
-		},
-		async list() {
-			calls.list += 1;
-			return snapshots.map((s) => s.header);
-		},
-		async inspect(id) {
-			calls.inspect += 1;
-			const events = logsById[id];
-			if (events === undefined) throw new Error("not found: " + id);
-			const meta = snapshots.find((s) => s.header.id === id)?.header ?? headersById?.[id] ?? { id };
-			return { meta, events };
-		},
-	};
-	return new Proxy(stub, {
-		get(obj, key) {
-			// 同 handle 桩：`then` 是引擎的 thenable 探测，不是插件在调方法。
-			if (key === "then") return undefined;
-			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
-			throw new Error(`tokstats 调了 persistence.${String(key)}：真实 ctx.sessionPersistence 面上没有这个方法`);
-		},
-	});
-}
-
-/**
- * 新服务面（`SessionPersistence`，dsh-session-persistence 0.1.3-alpha.2 起）。
- * 逐项抄自 `verify-host-contract.py --surface SessionPersistence` 在 0.1.5-rc.1 的输出。
- * 与 rc.2 是**硬差异**而非子集：`inspect` / `listSnapshots` 被移除，`list()` 改成
- * 返回带 revision 的快照（0.1.2-rc.1 共 13 个成员收尾于 `inspect`，0.1.3-alpha.2 起
- * 只剩这 5 个且带 `open`——两代无共存窗口，故可用 `"open" in persistence` 当版本哨兵）。
- */
-const SESSION_PERSISTENCE_SURFACE_V2 = ["create", "open", "flush", "stat", "list"];
-
-/** `SessionHandle` 成员面（同版本 `--file package/lib/types/handle.d.ts --surface SessionHandle`）。 */
-const SESSION_HANDLE_SURFACE = ["id", "header", "inheritedEventCount", "access", "read", "append", "flush", "close"];
-
-/**
- * 伪 `SessionHandle`：成员面按真实声明写全，面外成员一律抛错。
- * `inheritedEventCount` 刻意从独立的 inheritById 取而不是读 `header.seedLength`——
- * 新版把 fork 前缀长度从 header 挪到了这个手柄字段上，若从 header 兜，
- * 「实现漏改、继续读 meta.seedLength」这条静默错误就测不出来了。
- */
-function makeHandleStub(id, header, events, calls, access, inheritedEventCount) {
-	const handle = {
-		id,
-		header,
-		inheritedEventCount,
-		access,
-		async read() {
-			calls.read += 1;
-			if (calls.failRead === true) throw new Error("read failed: " + id);
-			return { eventState: "shared", events };
-		},
-		async append() {
-			throw new Error("本桩不覆盖写路径");
-		},
-		async flush() {
-			throw new Error("本桩不覆盖写路径");
-		},
-		async close() {
-			calls.close += 1;
-			if (calls.failClose === true) throw new Error("close failed: " + id);
-		},
-	};
-	return new Proxy(handle, {
-		get(obj, key) {
-			// `then` 是 JS 引擎的 thenable 探测（async 函数 return 值、await 都会读它），
-			// 不是本插件在调方法；真实对象没有 then 只会得到 undefined，不会抛。
-			if (key === "then") return undefined;
-			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
-			throw new Error(`tokstats 调了 handle.${String(key)}：真实 SessionHandle 面上没有这个成员`);
-		},
-	});
-}
-
-/**
- * 伪 persistence（新服务面）：会话读取走 `open(id,'read')` 手柄。
- * 同款保真度闸门（面外方法抛错）；`accesses` 记账供断言读路径只用 read 权限
- * （误用 'write' 会抢单写所有权，是真实存在的并发缺陷）。
- */
-function makePersistenceV2(snapshots, logsById, headersById, inheritById) {
-	const calls = { list: 0, open: 0, read: 0, close: 0, accesses: [], failRead: false, failClose: false };
-	const stub = {
-		calls,
-		async create() {
-			throw new Error("本桩不覆盖建会话路径");
-		},
-		async open(id, access) {
-			calls.open += 1;
-			calls.accesses.push(access);
-			const events = logsById[id];
-			if (events === undefined) throw new Error("not found: " + id);
-			const header = snapshots.find((s) => s.header.id === id)?.header ?? headersById?.[id] ?? { id };
-			return makeHandleStub(id, header, events, calls, access, inheritById?.[id] ?? 0);
-		},
-		async flush() {
-			throw new Error("本桩不覆盖全库 flush");
-		},
-		async stat() {
-			throw new Error("本桩不覆盖 stat");
-		},
-		async list() {
-			calls.list += 1;
-			return snapshots;
-		},
-	};
-	return new Proxy(stub, {
-		get(obj, key) {
-			// 同 handle 桩：`then` 是引擎的 thenable 探测，不是插件在调方法。
-			if (key === "then") return undefined;
-			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
-			throw new Error(`tokstats 调了 persistence.${String(key)}：真实 ctx.sessionPersistence 面上没有这个方法`);
-		},
-	});
-}
-
-/** 伪 cordis ctx：inject 按就绪情况回调（缺席的依赖永不回调，模拟服务未注册）。 */
-function makeCtx({ persistence, projections = true, loggerWarns } = {}) {
-	const state = { registered: null, flushHandler: null };
+function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections = true, loggerWarns } = {}) {
+	const state = { registered: [], injectCalls: [] };
+	const provided = { connection, sessionQuery, sessionProjectionCache };
 	const ctx = {
 		logger: { warn: (...args) => { if (loggerWarns !== undefined) loggerWarns.push(args.join(" ")); } },
+		get(name) {
+			const service = provided[name];
+			return service === undefined || service === null ? undefined : service;
+		},
 		inject(names, cb) {
-			const pctx = {};
+			state.injectCalls.push(names);
+			const pctx = { get: (name) => ctx.get(name) };
 			for (const name of names) {
-				if (name === "sessionPersistence" && persistence !== undefined && persistence !== null) pctx.sessionPersistence = persistence;
-				if (name === "sessionProjections" && projections !== false) pctx.sessionProjections = { register: (def) => { state.registered = def; return () => {}; } };
+				if (name === "sessionProjections") {
+					if (projections === false) continue;
+					pctx.sessionProjections = { register: (def) => { state.registered.push(def); return () => {}; } };
+					continue;
+				}
+				const service = provided[name];
+				if (service !== undefined && service !== null) pctx[name] = service;
 			}
-			if (Object.keys(pctx).length === names.length) cb(pctx);
+			// get 是桩自带的读取面，不参与「依赖是否到齐」的计数。
+			const ready = names.every((name) => name === "sessionProjections"
+				? (projections !== false)
+				: (provided[name] !== undefined && provided[name] !== null));
+			if (ready) cb(pctx);
 		},
-		on(name, cb) {
-			if (name === "session/flush") state.flushHandler = cb;
-			return () => {};
-		},
+		on() { return () => {}; },
 		effect() { return () => {}; },
 	};
 	return { ctx, state };
 }
 
-/** 独立临时 DSH_HOME + mock 计时器（吸收 5s 启动检查挂钟）。 */
-function setup(t) {
-	const home = mkdtempSync(join(tmpdir(), "tokstats-test-"));
-	process.env.DSH_HOME = home;
-	t.mock.timers.enable({ apis: ["setTimeout"] });
-	t.after(() => {
-		rmSync(home, { recursive: true, force: true });
+/** 一条完整会话日志：两次 step，各自一条 usage 终值。 */
+function sampleLog(header, inheritedEventCount = 0) {
+	return {
+		header,
+		inheritedEventCount,
+		events: [
+			{ type: "turn/start", seq: 0, time: T(26, 10, 0), data: { turn: 1 } },
+			messageEvent(1, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 60 }),
+			messageEvent(2, T(26, 10, 1), 1, 2, { inputTokens: 200000, outputTokens: 30 }),
+		],
+	};
+}
+
+/** 走真实分发框架：config.plugin 是分发键。 */
+function startTokstats(ctx, config) {
+	apply(ctx, { plugin: "tokstats", ...(config ?? {}) });
+}
+
+test("单元注册：key/stateVersion 走 ctx.inject 软依赖", () => {
+	const { ctx, state } = makeCtx({});
+	startTokstats(ctx);
+	assert.equal(state.registered.length, 1);
+	assert.equal(state.registered[0].key, TOKSTATS_KEY);
+	assert.equal(state.registered[0].stateVersion, 2);
+});
+
+test("projection 缺席：不注册单元，且不抛错（I8）", () => {
+	const { ctx, state } = makeCtx({ projections: false });
+	assert.doesNotThrow(() => startTokstats(ctx));
+	assert.equal(state.registered.length, 0);
+});
+
+test("RPC 注册：通道正确，且只传两个参数（p0-f：authority 选项已不存在）", () => {
+	const connection = makeConnection();
+	const { ctx } = makeCtx({
+		connection,
+		sessionQuery: makeSessionQuery([], {}),
+		sessionProjectionCache: makeProjectionCache({}),
 	});
-	return { home, cpPath: join(home, "storages", "tokstats-checkpoint.json") };
-}
-
-/** 排空 async 微任务（flushCheckpoint / runScan 的 await 链）。 */
-async function settle() {
-	for (let i = 0; i < 4; i += 1) await new Promise((r) => setImmediate(r));
-}
-
-const W_ALPHA = "D:\\proj\\alpha";
-
-// ── 测试桩保真度 ───────────────────────────────────────────────────────────
-
-test("伪 persistence 只提供真实服务面内的方法", () => {
-	const stub = makePersistence([], {});
-	const extra = Object.keys(stub).filter((k) => k !== "calls" && !SESSION_PERSISTENCE_SURFACE.includes(k));
-	assert.deepEqual(extra, [], "桩造出宿主没有的方法，会让用错 API 的实现也全绿");
+	startTokstats(ctx);
+	assert.equal(connection.registrations.length, 1);
+	assert.equal(connection.registrations[0].channel, TOKSTATS_CHANNEL);
+	assert.equal(connection.registrations[0].rest.length, 0, "handle(channel, handler) 只有两参；传第三参是死参数");
 });
 
-test("读面外方法抛错：桩不替宿主兜底", () => {
-	const stub = makePersistence([], {});
-	assert.throws(() => stub.readStoredRevision, /persistence\.readStoredRevision/);
+test("sessionQuery 缺席：RPC 不注册，且不抛错（I8 / AC-8）", () => {
+	const connection = makeConnection();
+	const { ctx } = makeCtx({ connection, sessionProjectionCache: makeProjectionCache({}) });
+	assert.doesNotThrow(() => startTokstats(ctx));
+	assert.equal(connection.registrations.length, 0, "无 sessionQuery 时不得注册端点");
 });
 
-test("伪 persistence（新服务面）只提供真实服务面内的方法", () => {
-	const stub = makePersistenceV2([], {});
-	const extra = Object.keys(stub).filter((k) => k !== "calls" && !SESSION_PERSISTENCE_SURFACE_V2.includes(k));
-	assert.deepEqual(extra, [], "桩造出宿主没有的方法，会让用错 API 的实现也全绿");
+test("sessionProjectionCache 缺席：端点注册但不抛错、返回空聚合（I8 / AC-8）", async () => {
+	const connection = makeConnection();
+	const { ctx } = makeCtx({
+		connection,
+		sessionQuery: makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) }),
+	});
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, true);
+	assert.equal(result.value.totals.calls, 0, "无缓存服务时没有摘要可折，聚合为空但不抛错");
 });
 
-test("两代服务面的允许清单不重叠地覆盖差异（inspect/listSnapshots ↔ open/stat）", () => {
-	// 防止日后有人把两份清单合并成一份「并集」——那会让桩同时提供两代的方法，
-	// 版本哨兵就再也测不出「实现写死了某一代」。
-	assert.deepEqual(SESSION_PERSISTENCE_SURFACE_V2.filter((k) => SESSION_PERSISTENCE_SURFACE.includes(k)), ["create", "list"]);
-	assert.ok(!SESSION_PERSISTENCE_SURFACE.includes("open"));
-	assert.ok(!SESSION_PERSISTENCE_SURFACE_V2.includes("inspect"));
-});
-
-test("伪 SessionHandle 的成员面等于真实声明", async () => {
-	const stub = makePersistenceV2([{ header: { id: "s1" }, revision: "r1" }], { s1: [] });
-	const handle = await stub.open("s1", "read");
-	assert.deepEqual(Object.keys(handle).sort(), [...SESSION_HANDLE_SURFACE].sort(), "手柄桩多/少成员都测不出真缺陷");
-});
-
-test("手柄读面外成员抛错：桩不替宿主兜底", async () => {
-	const stub = makePersistenceV2([{ header: { id: "s1" }, revision: "r1" }], { s1: [] });
-	const handle = await stub.open("s1", "read");
-	assert.throws(() => handle.readFrom, /handle\.readFrom/);
-});
-
-// ── 分发框架 ───────────────────────────────────────────────────────────────
-
-test("apply 分发框架：非 tokstats 插件静默跳过（host 半边为空）", async (t) => {
-	setup(t);
-	const { ctx, state } = makeCtx({ persistence: makePersistence([], {}) });
-	mod.apply(ctx, { plugin: "tokprev" });
-	mod.apply(ctx, { plugin: "whatever" });
-	mod.apply(ctx, undefined);
-	await settle();
-	assert.equal(state.registered, null, "不应注册任何 projection unit");
-});
-
-// ── usage 折叠口径 ─────────────────────────────────────────────────────────
-
-test("同 (turn,step) 终值替换：chunk 采样被 message.usage 替换，不双计", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const persistence = makePersistence([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const cell = state.registered.wire.view().cells.find((c) => c.p === "deepseek-official" && c.m === "deepseek-v4-flash" && c.d === D1 && c.b === 0);
-	assert.ok(cell, "应有官方模型桶 0 格");
-	// step1 终值 out=60（非 50+60=110）+ step2 out=10 → 70；in 1000+500；cr 200。
-	assert.equal(cell.out, 70);
-	assert.equal(cell.in, 1500);
-	assert.equal(cell.cr, 200);
-	assert.equal(cell.calls, 2);
-});
-
-test("流式递进采样：同 (turn,step) 多个 usage chunk 只计最后一个", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = [
-		log("request/header", T(10, 0), { header: { config: { provider: "p1", model: "m1" } } }),
-		log("assistant/chunk", T(10, 0), { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 100, outputTokens: 10 } } }),
-		log("assistant/chunk", T(10, 0), { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 300, outputTokens: 40 } } }),
-		log("assistant/chunk", T(10, 0), { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 300, outputTokens: 70 } } }),
-	];
-	const persistence = makePersistence([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const cell = state.registered.wire.view().cells[0];
-	assert.equal(cell.in, 300, "递进采样取最后值（100→300→300，差值法累计 300）");
-	assert.equal(cell.out, 70, "输出取最后值");
-	assert.equal(cell.calls, 1);
-});
-
-test("content-less 调用归因回落 request/header 的 provider/model", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = [
-		log("request/header", T(10, 0), { header: { config: { provider: "fallback-provider", model: "fb-model" } } }),
-		log("assistant/chunk", T(10, 0), { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 10, outputTokens: 2 } } }),
-	];
-	const persistence = makePersistence([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const cell = state.registered.wire.view().cells[0];
-	assert.equal(cell.p, "fallback-provider");
-	assert.equal(cell.m, "fb-model");
-});
-
-test("provider/model 归因以 assistant/message.source 为准（会话中切换模型）", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = [
-		log("request/header", T(10, 0), { header: { config: { provider: "old-provider", model: "old-model" } } }),
-		log("assistant/message", T(10, 0), { turn: 1, step: 1, message: { source: { kind: "model", provider: "new-provider", model: "new-model" } }, usage: { inputTokens: 5, outputTokens: 1 } }),
-	];
-	const persistence = makePersistence([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const cell = state.registered.wire.view().cells[0];
-	assert.equal(cell.p, "new-provider");
-	assert.equal(cell.m, "new-model");
-});
-
-// ── 工作区归并 / seed 去重 ────────────────────────────────────────────────
-
-test("fork 子会话：seed 前缀跳过 + 消耗归并到根工作区", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const root = rootEvents(log);
-	// seed 前缀 = 父日志 seq 0..4 的浅拷贝（seq 重映射为子日志自己的 0..4），随后是子会话自身的新事件。
-	const child = [
-		...root.slice(0, 5).map((e, i) => ({ ...e, seq: i })),
-		{ type: "assistant/message", seq: 5, time: T(11, 30), data: { turn: 1, step: 9, message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } }, usage: { inputTokens: 100, outputTokens: 5 } } },
-	];
-	const persistence = makePersistence([
-		{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "rr" },
-		{ header: { id: "child", createdAt: T(10, 0), parentSession: "root", seedLength: 5, delegationDepth: 1 }, revision: "rc" },
-	], { root, child });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const cell = state.registered.wire.view().cells.find((c) => c.w === W_ALPHA && c.p === "deepseek-official" && c.b === 0 && c.d === D1);
-	// 根：step1(60) + step2(10) = 70；子：step9 = 5 → 75。seed 前缀（child 的 seq<5）不计。
-	assert.equal(cell.out, 75);
-	assert.equal(cell.in, 1600);
-	assert.equal(cell.calls, 3);
-});
-
-test("父链断裂的孤儿子会话归 _orphan；深链归并到顶层 cwd", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = [
-		log("request/header", T(10, 0), { header: { config: { provider: "p", model: "m" } } }),
-		log("assistant/message", T(10, 0), { turn: 1, step: 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 7, outputTokens: 1 } }),
-	];
-	const grandchild = [
-		log("request/header", T(10, 0), { header: { config: { provider: "p", model: "m" } } }),
-		log("assistant/message", T(10, 0), { turn: 1, step: 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 11, outputTokens: 2 } }),
-	];
-	const persistence = makePersistence([
-		{ header: { id: "top", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" },
-		{ header: { id: "mid", createdAt: T(10, 0), parentSession: "top", delegationDepth: 1 }, revision: "r2" },
-		{ header: { id: "deep", createdAt: T(10, 0), parentSession: "mid", delegationDepth: 2 }, revision: "r3" },
-		{ header: { id: "orphan", createdAt: T(10, 0), parentSession: "gone", delegationDepth: 1 }, revision: "r4" },
-	], { top: events, mid: [], deep: grandchild, orphan: [] });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const cells = state.registered.wire.view().cells;
-	const alphaIn = cells.filter((c) => c.w === W_ALPHA).reduce((s, c) => s + c.in, 0);
-	assert.equal(alphaIn, 18, "深链（top←mid←deep）归并顶层 cwd：top 7 + deep 11");
-	assert.ok(cells.every((c) => c.w !== "_orphan"), "孤儿空日志无 cell 但不抛错");
-});
-
-test("孤儿会话有日志时归 _orphan 工作区（总量保真、归因降级）", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = [
-		log("assistant/chunk", T(10, 0), { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 9, outputTokens: 1 } } }),
-	];
-	const persistence = makePersistence([
-		{ header: { id: "orphan", createdAt: T(10, 0), parentSession: "gone", delegationDepth: 1 }, revision: "r1" },
-	], { orphan: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const cell = state.registered.wire.view().cells.find((c) => c.w === "_orphan");
-	assert.ok(cell, "孤儿样本归 _orphan");
-	assert.equal(cell.in, 9);
-});
-
-// ── 桶边界 / 日键 ─────────────────────────────────────────────────────────
-
-test("上下文桶边界：2 的幂对数桶（计费输入 = in+cr+cw）", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const sizes = [0, 4095, 4096, 8191, 8192, 131071, 131072, 200000];
-	const events = sizes.map((n, i) => log("assistant/message", T(10, i), { turn: 1, step: i + 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: n, outputTokens: 0 } }));
-	const persistence = makePersistence([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const byBucket = new Map(state.registered.wire.view().cells.map((c) => [c.b, c]));
-	const expected = { 0: [0, 4095], 1: [4096, 8191], 2: [8192], 5: [131071], 6: [131072, 200000] };
-	for (const [b, ins] of Object.entries(expected)) {
-		assert.equal(byBucket.get(Number(b)).in, ins.reduce((s, v) => s + v, 0), "桶 " + b);
+test("AC-8：三种服务缺席各断言一次不抛错", () => {
+	for (const missing of ["sessionProjections", "sessionQuery", "sessionProjectionCache"]) {
+		const connection = makeConnection();
+		const opts = {
+			connection,
+			sessionQuery: makeSessionQuery([], {}),
+			sessionProjectionCache: makeProjectionCache({}),
+		};
+		if (missing === "sessionProjections") opts.projections = false;
+		if (missing === "sessionQuery") opts.sessionQuery = undefined;
+		if (missing === "sessionProjectionCache") opts.sessionProjectionCache = undefined;
+		const { ctx } = makeCtx(opts);
+		assert.doesNotThrow(() => startTokstats(ctx), `${missing} 缺席不得抛错`);
 	}
-	assert.equal(byBucket.size, 5, "只出现 5 个桶（3、4 桶无样本）");
 });
 
-test("日键按本地时区自然日：23:59 与 00:01 分属两日", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = [
-		log("assistant/message", new Date(2026, 7, 25, 23, 59, 0).getTime(), { turn: 1, step: 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 1, outputTokens: 1 } }),
-		log("assistant/message", new Date(2026, 7, 26, 0, 1, 0).getTime(), { turn: 1, step: 2, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 2, outputTokens: 1 } }),
-	];
-	const persistence = makePersistence([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const days = new Set(state.registered.wire.view().cells.map((c) => c.d));
-	assert.deepEqual([...days].sort(), [D2, D1]);
+test("AC-7：cachedSnapshot 命中时零 I/O 读回摘要（不触发 coldSnapshot）", async () => {
+	const connection = makeConnection();
+	const cache = makeProjectionCache({
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 6, calls: 2, in: 200000, cr: 0, cw: 0, out: 90 }] } },
+	});
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, true);
+	assert.equal(cache.calls.coldSnapshot, 0, "缓存命中不得触发冷折叠");
+	assert.equal(query.calls.readSession, 0, "缓存命中不得读日志");
+	assert.equal(result.value.buckets[6].calls, 2);
+	assert.equal(result.value.buckets[6].out, 90);
 });
 
-// ── prices 合并 ────────────────────────────────────────────────────────────
+test("冷折叠兜底：缓存未命中时 readSession + coldSnapshot，数字与折叠一致", async () => {
+	const connection = makeConnection();
+	const cache = makeProjectionCache({}); // 全部未命中
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, true);
+	assert.equal(cache.calls.coldSnapshot, 1);
+	assert.equal(query.calls.readSession, 1);
+	// 200000 → 桶 6；1000 → 桶 0
+	assert.equal(result.value.buckets[6].calls, 1);
+	assert.equal(result.value.buckets[0].calls, 1);
+	assert.equal(result.value.totals.calls, 2);
+});
 
-test("prices 快照：内置官方价 ⊕ config.prices 覆盖/追加", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = [
-		log("assistant/chunk", T(10, 0), { turn: 1, step: 1, chunk: { type: "usage", usage: { inputTokens: 1, outputTokens: 1 } } }),
-	];
-	const persistence = makePersistence([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, {
-		plugin: "tokstats",
-		prices: {
-			"third-party-x": { "some-model": { input: 2, inputCached: 0.2, output: 4 } },
-			"deepseek-official": { "deepseek-v4-flash": { input: 99 } },
+test("单会话 readSession 失败：跳过该会话，其余正常（不抛错）", async () => {
+	const loggerWarns = [];
+	const connection = makeConnection();
+	const other = { id: "s-other", version: 4, createdAt: 2, cwd: W_BETA, isSeeded: false };
+	const cache = makeProjectionCache({});
+	const query = makeSessionQuery(
+		[{ header: HEADER }, { header: other }],
+		{ [other.id]: sampleLog(other) }, // HEADER 无日志 → readSession 抛
+	);
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache, loggerWarns });
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, true, "单会话失败不得让整次汇总失败");
+	assert.equal(result.value.totals.calls, 2, "另一会话仍被计入");
+	assert.ok(loggerWarns.some((line) => line.includes(HEADER.id)), "失败会话应有告警");
+});
+
+test("listSessions 抛错：端点返回错误信封而不是抛 500", async () => {
+	const connection = makeConnection();
+	const query = new Proxy({
+		async listSessions() { throw new Error("boom"); },
+	}, {
+		get(obj, key) {
+			if (key === "then") return undefined;
+			if (typeof key === "symbol" || key in obj) return Reflect.get(obj, key);
+			throw new Error("面外成员");
 		},
 	});
-	await settle();
-	const prices = state.registered.wire.view().prices;
-	assert.equal(prices["deepseek-official"]["deepseek-v4-flash"].input, 99, "覆盖内置价");
-	assert.equal(prices["deepseek-official"]["deepseek-v4-flash"].output, 9, "未覆盖字段保留内置值");
-	assert.equal(prices["deepseek-official"]["deepseek-v4-pro"].input, 9, "未触碰的内置模型保留");
-	assert.equal(prices["third-party-x"]["some-model"].output, 4, "追加第三方价");
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: makeProjectionCache({}) });
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, false, "handler 抛异常会被宿主转成 500，故必须自己收成错误信封");
+	assert.equal(typeof result.error.code, "string");
+	assert.equal(typeof result.error.message, "string");
+	assert.deepEqual(result.error.details, {}, "details 必须是对象（客户端 parseConnectionResponse 硬性检查）");
 });
 
-// ── checkpoint / 对账 ─────────────────────────────────────────────────────
-
-test("checkpoint 防抖落盘 + 二次启动 rev 命中零重扫 + 数据一致", async (t) => {
-	const { cpPath } = setup(t);
-	const log = makeLog();
-	const root = rootEvents(log);
-	const persistence = makePersistence([
-		{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" },
-	], { root });
-	const first = makeCtx({ persistence });
-	mod.apply(first.ctx, { plugin: "tokstats" });
-	await settle();
-	assert.ok(existsSync(cpPath) === false, "防抖窗口内未落盘");
-	t.mock.timers.tick(2000);
-	await settle();
-	assert.ok(existsSync(cpPath), "防抖后落盘");
-	const cp = JSON.parse(readFileSync(cpPath, "utf8"));
-	assert.equal(cp.schema, 1);
-	assert.deepEqual(Object.keys(cp.sessions), ["root"]);
-	assert.equal(cp.sessions.root.rev, "r1");
-
-	// 二次启动：同 revision → inspect 计数不变
-	const before = persistence.calls.inspect;
-	const second = makeCtx({ persistence });
-	mod.apply(second.ctx, { plugin: "tokstats" });
-	await settle();
-	assert.equal(persistence.calls.inspect, before, "rev 命中不重扫");
-	const cells2 = second.state.registered.wire.view().cells;
-	const official = cells2.find((c) => c.p === "deepseek-official");
-	assert.ok(official && official.out === 70, "数据一致（终值替换语义随 checkpoint 往返保持）");
-});
-
-test("rev 变更的会话重扫，未变的复用", async (t) => {
-	const { cpPath } = setup(t);
-	const log1 = makeLog();
-	const eventsA = [
-		log1("request/header", T(10, 0), { header: { config: { provider: "p", model: "m" } } }),
-		log1("assistant/message", T(10, 0), { turn: 1, step: 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 10, outputTokens: 1 } }),
-	];
-	const log2 = makeLog();
-	const eventsB = [
-		log2("request/header", T(10, 0), { header: { config: { provider: "p", model: "m" } } }),
-		log2("assistant/message", T(10, 0), { turn: 1, step: 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 20, outputTokens: 2 } }),
-	];
-	const snapshots = [
-		{ header: { id: "a", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "ra" },
-		{ header: { id: "b", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "rb" },
-	];
-	const logsById = { a: eventsA, b: eventsB };
-	const first = makeCtx({ persistence: makePersistence(snapshots, logsById) });
-	mod.apply(first.ctx, { plugin: "tokstats" });
-	await settle();
-	t.mock.timers.tick(2000);
-	await settle();
-
-	// 二次启动：a 的 rev 变更（日志也变长），b 不变
-	const snapshots2 = [snapshots[0], { ...snapshots[1], revision: "rb" }];
-	snapshots2[0] = { ...snapshots[0], revision: "ra2" };
-	logsById.a = [...eventsA, log1("assistant/message", T(11, 0), { turn: 1, step: 2, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 5, outputTokens: 1 } })];
-	const second = makeCtx({ persistence: makePersistence(snapshots2, logsById) });
-	mod.apply(second.ctx, { plugin: "tokstats" });
-	await settle();
-	const cells = second.state.registered.wire.view().cells;
-	const totalIn = cells.reduce((s, c) => s + c.in, 0);
-	assert.equal(totalIn, 10 + 5 + 20, "a 用新日志重折（15），b 复用旧折叠（20）");
-});
-
-test("checkpoint 损坏：丢弃并全量重扫（不抛错）", async (t) => {
-	const { cpPath } = setup(t);
-	mkdirSync(join(cpPath, ".."), { recursive: true });
-	writeFileSync(cpPath, "{ broken json", "utf8");
-	const warnCalls = [];
-	const log = makeLog();
-	const events = rootEvents(log);
-	const persistence = makePersistence([{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { root: events });
-	t.mock.method(console, "warn", (...args) => { warnCalls.push(args.join(" ")); });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	assert.ok(warnCalls.some((w) => w.includes("checkpoint")), "损坏告警走 console.warn");
-	const cell = state.registered.wire.view().cells.find((c) => c.p === "deepseek-official");
-	assert.ok(cell, "全量重扫后数据完整");
-	assert.equal(cell.out, 70);
-	t.mock.timers.tick(2000);
-	await settle();
-	assert.equal(JSON.parse(readFileSync(cpPath, "utf8")).schema, 1, "重扫后写回合法 checkpoint");
-});
-
-// ── flush 增量 ────────────────────────────────────────────────────────────
-
-test("session/flush 增量：lastSeq 续折不重扫，终值替换语义保持", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const root = rootEvents(log);
-	const persistence = makePersistence([{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { root });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-
-	const flushedEvents = [
-		...root,
-		log("assistant/message", T(12, 0), { turn: 2, step: 1, message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } }, usage: { inputTokens: 10, outputTokens: 2 } }),
-	];
-	state.flushHandler({ id: "root", header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, events: flushedEvents });
-	let cell = state.registered.wire.view().cells.find((c) => c.p === "deepseek-official" && c.b === 0);
-	assert.equal(cell.calls, 3, "新增一步（旧 2 + 新 1）");
-	assert.equal(cell.in, 1510);
-	assert.equal(cell.out, 72);
-
-	// flush 追加同 (turn,step) 终值：out 2 → 9（替换非叠加）
-	state.flushHandler({
-		id: "root",
-		header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA },
-		events: [...flushedEvents, log("assistant/message", T(12, 1), { turn: 2, step: 1, message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } }, usage: { inputTokens: 10, outputTokens: 9 } })],
+test("未知 endpoint：返回 bad-request 错误信封", async () => {
+	const connection = makeConnection();
+	const { ctx } = makeCtx({
+		connection,
+		sessionQuery: makeSessionQuery([], {}),
+		sessionProjectionCache: makeProjectionCache({}),
 	});
-	cell = state.registered.wire.view().cells.find((c) => c.p === "deepseek-official" && c.b === 0);
-	assert.equal(cell.calls, 3);
-	assert.equal(cell.out, 79, "终值替换：72 - 2 + 9");
+	startTokstats(ctx);
+	const result = await connection.invoke("nope", {});
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "bad-request");
 });
 
-test("扫尾补折：会话不在快照表时补折结果仍落盘（不因取 revision 失败而丢）", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const liveLog = makeLog();
-	const liveEvents = [
-		liveLog("request/header", T(10, 0), { header: { config: { provider: "live-p", model: "live-m" } } }),
-		liveLog("assistant/message", T(10, 5), { turn: 1, step: 1, message: { source: { kind: "model", provider: "live-p", model: "live-m" } }, usage: { inputTokens: 7, outputTokens: 3 } }),
-	];
-	const snapshots = [{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }];
-	const persistence = makePersistence(snapshots, { root: events, live: liveEvents }, { live: { id: "live", createdAt: T(10, 0), cwd: W_ALPHA } });
-
-	// 把扫盘卡在 listSnapshots 上，制造「扫描中收到 flush」的窗口。
-	let release = null;
-	const gate = new Promise((r) => { release = r; });
-	let gated = true;
-	const inner = persistence.listSnapshots;
-	persistence.listSnapshots = async () => {
-		if (gated) {
-			gated = false;
-			await gate;
-		}
-		return inner();
-	};
-
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	assert.equal(state.registered.wire.view().complete, false, "扫盘仍停在 scanning");
-
-	// live 不在快照表里：主循环末尾 agg.sessions = next 会把它整个抹掉，
-	// 只剩扫尾补折能救回来。补折里取 revision 失败不能把这份数据一起带走。
-	state.flushHandler({ id: "live", header: { id: "live", createdAt: T(10, 0), cwd: W_ALPHA }, events: liveEvents });
-	release(snapshots);
-	await settle();
-
-	const cell = state.registered.wire.view().cells.find((c) => c.m === "live-m");
-	assert.ok(cell, "live 会话的统计没有被扫尾补折丢掉");
-	assert.equal(cell.out, 3);
+test("RPC 入参：windowDays 透传并影响窗口过滤", async () => {
+	const connection = makeConnection();
+	const cache = makeProjectionCache({
+		[HEADER.id]: {
+			[TOKSTATS_KEY]: {
+				w: HEADER.cwd, e: null,
+				rows: [
+					{ d: tokstatsDayKey(Date.now()), b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 },
+					{ d: "2026-01-05", b: 0, calls: 5, in: 10, cr: 0, cw: 0, out: 1 },
+				],
+			},
+		},
+	});
+	const { ctx } = makeCtx({ connection, sessionQuery: makeSessionQuery([{ header: HEADER }], {}), sessionProjectionCache: cache });
+	startTokstats(ctx);
+	// 注：windowDays 是「近 N 天」，故 0 表示全部、365 才覆盖到 1 月。
+	const wide = await connection.invoke(TOKSTATS_ENDPOINT, { windowDays: 0 });
+	assert.equal(wide.value.totals.calls, 6, "windowDays: 0 = 全部");
+	const narrow = await connection.invoke(TOKSTATS_ENDPOINT, { windowDays: 30 });
+	assert.equal(narrow.value.totals.calls, 1, "30 天窗口滤掉 1 月的格子");
 });
 
-// ── projection 单元语义 ───────────────────────────────────────────────────
-
-test("版本回声 apply：聚合版本变化返回新引用，未变返回同引用", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const persistence = makePersistence([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const def = state.registered;
-	const s0 = def.init();
-	const s1 = def.apply(s0, { type: "x", seq: 99, time: T(10, 0), data: {} });
-	assert.notEqual(s1, s0, "初始状态落后于聚合版本 → 新引用");
-	assert.ok(s1.v > 0);
-	const s2 = def.apply(s1, { type: "x", seq: 100, time: T(10, 0), data: {} });
-	assert.equal(s2, s1, "版本未变 → 同引用（零下游工作）");
-	// 聚合变化（flush）后 apply 产生新引用
-	state.flushHandler({ id: "s1", header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, events: [...events, log("assistant/message", T(12, 0), { turn: 2, step: 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 1, outputTokens: 1 } })] });
-	const s3 = def.apply(s2, { type: "x", seq: 101, time: T(10, 0), data: {} });
-	assert.notEqual(s3, s2, "聚合版本变化 → 新引用（触发 push frame）");
-	assert.ok(def.wire.viewSchema.parse(state.registered.wire.view()), "duck-type viewSchema 恒等通过");
+test("RPC 入参：windowDays 非正数回落行配置；workspace 透传", async () => {
+	const connection = makeConnection();
+	const other = { id: "s-other", version: 4, createdAt: 2, cwd: W_BETA, isSeeded: false };
+	const today = tokstatsDayKey(Date.now());
+	const cache = makeProjectionCache({
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: today, b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] } },
+		[other.id]: { [TOKSTATS_KEY]: { w: other.cwd, e: null, rows: [{ d: today, b: 0, calls: 4, in: 10, cr: 0, cw: 0, out: 1 }] } },
+	});
+	const { ctx } = makeCtx({
+		connection,
+		sessionQuery: makeSessionQuery([{ header: HEADER }, { header: other }], {}),
+		sessionProjectionCache: cache,
+	});
+	startTokstats(ctx);
+	const filtered = await connection.invoke(TOKSTATS_ENDPOINT, { workspace: other.cwd });
+	assert.equal(filtered.value.totals.calls, 4);
+	assert.equal(filtered.value.workspace, other.cwd);
+	assert.deepEqual(filtered.value.workspaces.map((w) => w.path), [other.cwd]);
+	const fallback = await connection.invoke(TOKSTATS_ENDPOINT, { windowDays: -3 });
+	assert.equal(fallback.value.windowDays, 90, "非正数回落行配置缺省 90");
 });
 
-// ── 新服务面（0.1.3-alpha.2+）路径 ────────────────────────────────────────
-//
-// 跨版本适配的正确性只能靠「同一份 fixture 喂两代桩、产出必须一致」来钉：
-// 两代的方法名、返回形状、fork 前缀字段来源都不同，任何一处映射错了，
-// 都会表现为静默的统计偏差而不是报错。
-
-test("两代服务面产出逐格一致（list/snapshots vs inspect）", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const snapshots = [{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }];
-	const old = makeCtx({ persistence: makePersistence(snapshots, { s1: events }) });
-	mod.apply(old.ctx, { plugin: "tokstats" });
-	await settle();
-	const next = makeCtx({ persistence: makePersistenceV2(snapshots, { s1: events }) });
-	mod.apply(next.ctx, { plugin: "tokstats" });
-	await settle();
-	const cellOld = old.state.registered.wire.view().cells;
-	const cellNext = next.state.registered.wire.view().cells;
-	assert.ok(cellOld.length > 0, "旧路径有产出，比对才有意义");
-	assert.deepEqual(cellNext, cellOld, "两代路径的折叠结果必须逐格一致");
-	assert.equal(next.state.registered.wire.view().complete, true, "新路径扫盘正常收尾");
+test("行 config.windowDays 生效（缺省 90）", async () => {
+	const connection = makeConnection();
+	const cache = makeProjectionCache({
+		[HEADER.id]: {
+			[TOKSTATS_KEY]: {
+				w: HEADER.cwd, e: null,
+				rows: [
+					{ d: tokstatsDayKey(Date.now()), b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 },
+					{ d: "2026-01-05", b: 0, calls: 5, in: 10, cr: 0, cw: 0, out: 1 },
+				],
+			},
+		},
+	});
+	const { ctx } = makeCtx({ connection, sessionQuery: makeSessionQuery([{ header: HEADER }], {}), sessionProjectionCache: cache });
+	startTokstats(ctx, { windowDays: 10 });
+	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	assert.equal(result.value.windowDays, 10);
+	assert.equal(result.value.totals.calls, 1, "10 天窗口滤掉 1 月的格子");
 });
 
-test("新服务面 fork 前缀去重：靠 handle.inheritedEventCount（header 已无 seedLength）", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const root = rootEvents(log);
-	// seed 前缀 = 父日志 seq 0..4 的浅拷贝（seq 重映射为子日志自己的 0..4）。
-	const child = [
-		...root.slice(0, 5).map((e, i) => ({ ...e, seq: i })),
-		{ type: "assistant/message", seq: 5, time: T(11, 30), data: { turn: 1, step: 9, message: { source: { kind: "model", provider: "deepseek-official", model: "deepseek-v4-flash" } }, usage: { inputTokens: 100, outputTokens: 5 } } },
-	];
-	// 新版 header 只有 isSeeded，前缀长度在 storage metadata 上（手柄字段）。
-	const persistence = makePersistenceV2(
-		[
-			{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "rr" },
-			{ header: { id: "child", createdAt: T(10, 0), parentSession: "root", isSeeded: true, delegationDepth: 1 }, revision: "rc" },
-		],
-		{ root, child },
-		undefined,
-		{ child: 5 },
-	);
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const cell = state.registered.wire.view().cells.find((c) => c.w === W_ALPHA && c.p === "deepseek-official" && c.b === 0 && c.d === D1);
-	// 根 70 + 子 step9 = 5 → 75；若漏读 inheritedEventCount，子会话的 seed 前缀
-	// 会被重复计入，out 会变成 75 + 70 = 145。
-	assert.equal(cell.out, 75);
-	assert.equal(cell.in, 1600);
-	assert.equal(cell.calls, 3);
+test("E1 折叠区间在读取期排除，避免与 epoch 合计双计", async () => {
+	const connection = makeConnection();
+	// epoch 是「按桶合计」：桶 1 有 2 次、桶 0 有 1 次，各带自己的输出量。
+	const epochBuckets = [];
+	for (let i = 0; i < TOKSTATS_BUCKET_COUNT; i += 1) epochBuckets.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
+	epochBuckets[1] = { calls: 2, in: 5000, cr: 0, cw: 0, out: 40 };
+	epochBuckets[0] = { calls: 1, in: 100, cr: 0, cw: 0, out: 5 };
+	const cache = makeProjectionCache({
+		[HEADER.id]: {
+			[TOKSTATS_KEY]: {
+				w: HEADER.cwd,
+				// 明细两格落在 epoch 区间内（已被折进合计），读取期必须跳过它们
+				e: { start: "2026-01-01", end: "2026-09-21", buckets: epochBuckets },
+				rows: [
+					{ d: "2026-01-05", b: 1, calls: 2, in: 5000, cr: 0, cw: 0, out: 40 },
+					{ d: "2026-02-05", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 5 },
+				],
+			},
+		},
+	});
+	const { ctx } = makeCtx({
+		connection,
+		sessionQuery: makeSessionQuery([{ header: HEADER }], {}),
+		sessionProjectionCache: cache,
+	});
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_ENDPOINT, { windowDays: 0 });
+	assert.equal(result.value.totals.calls, 3, "区间内明细跳过、epoch 按桶合计计入（不双计）");
+	assert.equal(result.value.buckets[1].calls, 2, "epoch 的桶粒度必须保住");
+	assert.equal(result.value.buckets[0].calls, 1);
+	assert.equal(result.value.totals.out, 45);
 });
 
-test("新服务面读日志只用 read 权限（误用 write 会抢单写所有权）", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const persistence = makePersistenceV2([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	assert.ok(persistence.calls.accesses.length > 0, "确实开过手柄");
-	assert.deepEqual([...new Set(persistence.calls.accesses)], ["read"], "只允许 read");
-	assert.ok(state.registered.wire.view().cells.length > 0);
-});
-
-test("手柄 close 抛错不掩盖已读到的日志", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const persistence = makePersistenceV2([{ header: { id: "s1", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { s1: events });
-	persistence.calls.failClose = true;
-	const { ctx, state } = makeCtx({ persistence });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	assert.equal(persistence.calls.close, 1, "确实走到了 close 且它抛了");
-	const cell = state.registered.wire.view().cells.find((c) => c.p === "deepseek-official");
-	assert.ok(cell, "close 抖动不该把整个会话判成读取失败");
-	assert.equal(cell.out, 70);
-});
-
-test("新服务面单会话 read 失败：跳过该会话，其余正常", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const persistence = makePersistenceV2([
-		{ header: { id: "bad", createdAt: T(10, 0), cwd: "D:\\bad" }, revision: "r1" },
-		{ header: { id: "good", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r2" },
-	], { bad: events, good: events });
-	// bad 的 read 抛错、good 正常：用 id 分流。
-	const inner = persistence.open;
-	persistence.open = async (id, access) => {
-		const handle = await inner(id, access);
-		if (id === "bad") handle.read = async () => { throw new Error("read blew up: bad"); };
-		return handle;
-	};
-	const warns = [];
-	const { ctx, state } = makeCtx({ persistence, loggerWarns: warns });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	assert.ok(warns.some((w) => w.includes("bad")), "失败会话有日志告警");
-	const cells = state.registered.wire.view().cells;
-	assert.ok(cells.every((c) => c.w === W_ALPHA), "只有 good 的数据");
-	assert.equal(cells.find((c) => c.p === "deepseek-official").out, 70);
-});
-
-test("旧服务面不误调 list()：rc.2 的 list 返回 header[]，认名字换名会丢掉全部 revision", async (t) => {
-	const { cpPath } = setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const persistence = makePersistence([{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { root: events });
-	const first = makeCtx({ persistence });
-	mod.apply(first.ctx, { plugin: "tokstats" });
-	await settle();
-	t.mock.timers.tick(2000);
-	await settle();
-	assert.equal(persistence.calls.list, 0, "旧路径必须走 listSnapshots");
-	assert.equal(JSON.parse(readFileSync(cpPath, "utf8")).sessions.root.rev, "r1", "revision 确实落进了 checkpoint");
-});
-
-test("新服务面对账等效：rev 命中零重读，变更才重折", async (t) => {
-	const { cpPath } = setup(t);
-	const log1 = makeLog();
-	const eventsA = [
-		log1("request/header", T(10, 0), { header: { config: { provider: "p", model: "m" } } }),
-		log1("assistant/message", T(10, 0), { turn: 1, step: 1, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 10, outputTokens: 1 } }),
-	];
-	const logsById = { a: eventsA };
-	const persistence = makePersistenceV2([{ header: { id: "a", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "ra" }], logsById);
-	const first = makeCtx({ persistence });
-	mod.apply(first.ctx, { plugin: "tokstats" });
-	await settle();
-	t.mock.timers.tick(2000);
-	await settle();
-	assert.equal(JSON.parse(readFileSync(cpPath, "utf8")).sessions.a.rev, "ra");
-
-	// 二次启动：同 revision → 不再开手柄读日志
-	const before = persistence.calls.open;
-	const second = makeCtx({ persistence });
-	mod.apply(second.ctx, { plugin: "tokstats" });
-	await settle();
-	assert.equal(persistence.calls.open, before, "rev 命中不重读日志");
-	assert.equal(second.state.registered.wire.view().cells.reduce((s, c) => s + c.in, 0), 10, "复用 checkpoint 数据");
-
-	// rev 变更 → 重折
-	logsById.a = [...eventsA, log1("assistant/message", T(11, 0), { turn: 1, step: 2, message: { source: { kind: "model", provider: "p", model: "m" } }, usage: { inputTokens: 5, outputTokens: 1 } })];
-	const third = makeCtx({ persistence: makePersistenceV2([{ header: { id: "a", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "ra2" }], logsById) });
-	mod.apply(third.ctx, { plugin: "tokstats" });
-	await settle();
-	assert.equal(third.state.registered.wire.view().cells.reduce((s, c) => s + c.in, 0), 15, "rev 变更后重折");
-});
-
-// ── 降级矩阵（硬规则 6） ──────────────────────────────────────────────────
-
-test("persistence 缺席：5s 后发布 no-persistence 完成态空数据", async (t) => {
-	setup(t);
-	const { ctx, state } = makeCtx({ persistence: null });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	assert.equal(state.registered.wire.view().complete, false, "宽限期内是统计中");
-	t.mock.timers.tick(5000);
-	const value = state.registered.wire.view();
-	assert.equal(value.complete, true);
-	assert.equal(value.reason, "no-persistence");
-	assert.deepEqual(value.cells, []);
-});
-
-test("projection 缺席：聚合照跑、checkpoint 照写、仅 console 警告", async (t) => {
-	const { cpPath } = setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const warns = [];
-	const persistence = makePersistence([{ header: { id: "root", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r1" }], { root: events });
-	const { ctx, state } = makeCtx({ persistence, projections: false, loggerWarns: warns });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	assert.equal(state.registered, null, "无 projection 注册");
-	t.mock.timers.tick(2000);
-	await settle();
-	assert.ok(existsSync(cpPath), "checkpoint 照写");
-	assert.equal(JSON.parse(readFileSync(cpPath, "utf8")).sessions.root.cells !== undefined, true);
-	t.mock.timers.tick(3000);
-	assert.ok(warns.some((w) => w.includes("sessionProjections")), "缺席告警");
-});
-
-test("单会话 inspect 失败：跳过该会话，其余正常", async (t) => {
-	setup(t);
-	const log = makeLog();
-	const events = rootEvents(log);
-	const persistence = makePersistence([
-		{ header: { id: "bad", createdAt: T(10, 0), cwd: "D:\\bad" }, revision: "r1" },
-		{ header: { id: "good", createdAt: T(10, 0), cwd: W_ALPHA }, revision: "r2" },
-	], { good: events }); // bad 的日志缺席 → inspect throw
-	const warns = [];
-	const { ctx, state } = makeCtx({ persistence, loggerWarns: warns });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	assert.ok(warns.some((w) => w.includes("bad")), "失败会话有日志告警");
-	const cells = state.registered.wire.view().cells;
-	assert.ok(cells.every((c) => c.w === W_ALPHA), "只有 good 的数据，bad 不在场");
-	assert.equal(cells.find((c) => c.p === "deepseek-official").out, 70);
-});
-
-test("listSnapshots 失败：发布 scan-error 完成态空数据", async (t) => {
-	setup(t);
-	const persistence = makePersistence([], {});
-	persistence.listSnapshots = async () => { throw new Error("disk gone"); };
-	const warns = [];
-	const { ctx, state } = makeCtx({ persistence, loggerWarns: warns });
-	mod.apply(ctx, { plugin: "tokstats" });
-	await settle();
-	const value = state.registered.wire.view();
-	assert.equal(value.complete, true);
-	assert.equal(value.reason, "scan-error");
-	assert.deepEqual(value.cells, []);
-	assert.ok(warns.some((w) => w.includes("扫盘失败")));
+test("apply 分发：非 tokstats 插件不触碰 tokstats 的注册", () => {
+	const connection = makeConnection();
+	const { ctx, state } = makeCtx({ connection, sessionQuery: makeSessionQuery([], {}), sessionProjectionCache: makeProjectionCache({}) });
+	apply(ctx, { plugin: "tokprev" });
+	assert.equal(state.injectCalls.length, 0);
+	assert.equal(connection.registrations.length, 0);
 });
