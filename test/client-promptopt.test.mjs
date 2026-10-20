@@ -18,6 +18,7 @@ import {
 } from "./client-harness.mjs";
 
 const NS = "dsh-plugins.promptopt";
+const CHANNEL = "/dsh-plugins.promptopt";
 // composer 卡片内部工具行的右端：模型选择座位之后、发送按钮之前。宿主契约
 // 给可点控件的位置——dock 是「环境读数带」，不该放可点控件。
 const SLOT = "conversation.input.right";
@@ -310,8 +311,96 @@ test("英文界面下 UI 走英文词典，草稿照原样送出不改写（内�
 	await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
 	await settle();
 	const tree = o.render();
-	assert.equal(textOf(byClass(tree, "dsh-promptopt-title")), "Prompt optimizer");
+	assert.equal(textOf(byClass(tree, "dsh-promptopt-title")), "Prompt restructure");
 	assert.equal(textOf(byClass(tree, "dsh-promptopt-adopt")), "Adopt");
 	assert.deepEqual(rpc.calls[0].payload, { text: "写个排序函数" }, "中文草稿原样送出");
 	assert.equal(textOf(byClass(tree, "dsh-promptopt-optimized")), "写个排序函数（优化版）", "英文界面照样出中文优化文");
 });
+
+
+// ── 无需整理形态（F4 / AC-12） ─────────────────────────────────────────────
+
+test("AC-12：noChange 时显示「无需整理」提示并禁用采纳", async () => {
+	const rpc = makeRpcStub().respond(() => ({ ok: true, value: { text: "原样", durationMs: 10, noChange: true } }));
+	const o = mount({ connection: { rpc }, draft: "原样" });
+	await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+	await settle();
+	const tree = o.render();
+	assert.equal(textOf(byClass(tree, "dsh-promptopt-nochange")), "原文已足够清晰，无需整理");
+	const adopt = byClass(tree, "dsh-promptopt-adopt");
+	assert.equal(adopt.props.disabled, true, "采纳无意义，应禁用");
+	assert.equal(adopt.props.title, "整理结果与原文一致，无需采纳");
+});
+
+test("AC-12：noChange 时点击采纳不写回草稿", async () => {
+	const rpc = makeRpcStub().respond(() => ({ ok: true, value: { text: "原样", durationMs: 10, noChange: true } }));
+	const o = mount({ connection: { rpc }, draft: "原样" });
+	await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+	await settle();
+	byClass(o.render(), "dsh-promptopt-adopt").props.onClick();
+	assert.deepEqual(o.writes, [], "noChange 下采纳不得写回");
+});
+
+test("有变化时不禁用采纳，且不显示无需整理提示", async () => {
+	const rpc = makeRpcStub().respond(() => ({ ok: true, value: { text: "整理后", durationMs: 10, noChange: false } }));
+	const o = mount({ connection: { rpc }, draft: "整理前" });
+	await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+	await settle();
+	const tree = o.render();
+	assert.equal(byClass(tree, "dsh-promptopt-adopt").props.disabled, false);
+	assert.equal(byClass(tree, "dsh-promptopt-nochange"), undefined, "有变化时不显示该提示");
+});
+
+// ── 计数器上报（AC-13） ────────────────────────────────────────────────────
+
+test("采纳上报 adopted 事件，携带原文与产物的字符数", async () => {
+	const rpc = makeRpcStub().respond((call) => (call.endpoint === "event"
+		? { ok: true, value: {} }
+		: { ok: true, value: { text: "整理后结果", durationMs: 10 } }));
+	const o = mount({ connection: { rpc }, draft: "整理前" });
+	await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+	await settle();
+	byClass(o.render(), "dsh-promptopt-adopt").props.onClick();
+	const event = rpc.calls.find((c) => c.endpoint === "event");
+	assert.ok(event, "采纳应上报一次事件");
+	assert.equal(event.channel, CHANNEL);
+	assert.deepEqual(event.payload, { event: "adopted", before: 3, after: 5 });
+});
+
+test("已出结果后关闭（Esc / 点外 / 关闭按钮）上报 dismissed", async () => {
+	const rpc = makeRpcStub().respond((call) => (call.endpoint === "event"
+		? { ok: true, value: {} }
+		: { ok: true, value: { text: "整理后", durationMs: 10 } }));
+	const o = mount({ connection: { rpc }, draft: "整理前" });
+	await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+	await settle();
+	// Esc 监听器是在 open 为真那一轮渲染时注册的，故要先渲染一次让 effect 落位。
+	o.render();
+	fireDocument("keydown", { key: "Escape" });
+	const event = rpc.calls.find((c) => c.endpoint === "event");
+	assert.ok(event, "放弃应上报一次事件");
+	assert.equal(event.payload.event, "dismissed");
+});
+
+test("请求在飞时关闭算取消，不计入放弃", async () => {
+	const rpc = makeRpcStub().hang();
+	const o = mount({ connection: { rpc }, draft: "整理前" });
+	void byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+	await settle();
+	o.render();
+	fireDocument("keydown", { key: "Escape" });
+	assert.equal(rpc.calls.filter((c) => c.endpoint === "event").length, 0, "取消不是放弃");
+});
+
+test("计数通道失败不影响交互（观测面不得挡住功能）", async () => {
+	const rpc = makeRpcStub().respond((call) => {
+		if (call.endpoint === "event") throw new Error("counter down");
+		return { ok: true, value: { text: "整理后", durationMs: 10 } };
+	});
+	const o = mount({ connection: { rpc }, draft: "整理前" });
+	await byClass(o.render(), "dsh-promptopt-trigger").props.onClick();
+	await settle();
+	assert.doesNotThrow(() => byClass(o.render(), "dsh-promptopt-adopt").props.onClick());
+	assert.deepEqual(o.writes, ["整理后"], "草稿仍然写回");
+});
+

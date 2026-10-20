@@ -178,11 +178,15 @@ test("面板打开时发一次 RPC（channel / endpoint / 缺省窗口）", asyn
 	rpc.respond(() => ({ ok: true, value: makeSummary() }));
 	const { react, main, t } = setupClient({ rpc });
 	const tree = await renderPanel(react, main, { t });
-	assert.equal(rpc.calls.length, 1, "打开即拉一次");
-	assert.equal(rpc.calls[0].channel, CHANNEL);
-	assert.equal(rpc.calls[0].endpoint, "summary");
-	assert.equal(rpc.calls[0].payload.windowDays, 90, "缺省 90 天");
-	assert.equal(rpc.calls[0].payload.workspace, undefined, "未选工作区时不传该字段");
+	// 打开时并发拉两块：主报表 + promptopt 计数器（AC-13）。
+	assert.equal(rpc.calls.length, 2, "打开即各拉一次");
+	const summary = rpc.calls.find((c) => c.endpoint === "summary");
+	const counters = rpc.calls.find((c) => c.endpoint === "promptopt");
+	assert.ok(summary, "应拉主报表");
+	assert.ok(counters, "应拉 promptopt 计数器");
+	assert.equal(summary.channel, CHANNEL);
+	assert.equal(summary.payload.windowDays, 90, "缺省 90 天");
+	assert.equal(summary.payload.workspace, undefined, "未选工作区时不传该字段");
 	assert.ok(tree !== null);
 });
 
@@ -232,7 +236,8 @@ test("切换窗口：每个档位各发一次请求（90 / 30 / 全部=0）", as
 	let tree = main.comp(props);
 	react.runEffects();
 	await new Promise((r) => setImmediate(r));
-	assert.equal(rpc.calls.length, 1);
+	// 首轮：主报表 + 计数器各一次
+	assert.equal(rpc.calls.filter((c) => c.endpoint === "summary").length, 1);
 
 	// 找到「全部」按钮并点击 → 触发 setWindowDays(0)，重渲染后 effect 再发一次。
 	react.reset();
@@ -243,8 +248,9 @@ test("切换窗口：每个档位各发一次请求（90 / 30 / 全部=0）", as
 	tree = main.comp(props);
 	react.runEffects();
 	await new Promise((r) => setImmediate(r));
-	assert.equal(rpc.calls.length, 2, "切档各发一次");
-	assert.equal(rpc.calls[1].payload.windowDays, 0, "「全部」档发 0");
+	const summaries = rpc.calls.filter((c) => c.endpoint === "summary");
+	assert.equal(summaries.length, 2, "切档各发一次");
+	assert.equal(summaries[1].payload.windowDays, 0, "「全部」档发 0");
 });
 
 test("降级：connection 缺席时显示空态文案，不抛错（I8）", async () => {
@@ -301,3 +307,42 @@ test("不渲染模型表与成本列（Q6 已删）", async () => {
 
 
 
+
+
+// ── promptopt 计数器区块（AC-13） ──────────────────────────────────────────
+
+test("AC-13：计数器可用时渲染使用情况区块", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond((call) => call.endpoint === "promptopt"
+		? { ok: true, value: { started: 3, adopted: 2, dismissed: 1, charsDelta: -12 } }
+		: { ok: true, value: makeSummary() });
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const text = textOf(tree);
+	assert.ok(text.includes("提示词整理使用情况"), "应渲染计数器分区");
+	assert.ok(text.includes("3 / 2 / 1"), "发起 / 采纳 / 放弃三个数");
+	const row = nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-row") && String(n.props.title ?? "").includes("字符增减"));
+	assert.ok(row, "行 tooltip 应带字符增减量");
+	assert.match(row.props.title, /-12/);
+});
+
+test("AC-13：计数器不可用（null）时整块不渲染，不显示假零", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond((call) => call.endpoint === "promptopt"
+		? { ok: false, error: { code: "model-unavailable", message: "x", details: {} } }
+		: { ok: true, value: makeSummary() });
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.ok(!textOf(tree).includes("提示词整理使用情况"), "计数器不可用时隐藏该分区");
+});
+
+test("AC-13：正增量带 + 号，零增量不带", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond((call) => call.endpoint === "promptopt"
+		? { ok: true, value: { started: 1, adopted: 1, dismissed: 0, charsDelta: 40 } }
+		: { ok: true, value: makeSummary() });
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const row = nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-row") && String(n.props.title ?? "").includes("字符增减"));
+	assert.match(row.props.title, /\+40/);
+});

@@ -43,12 +43,15 @@ test("分发框架：config.plugin=promptopt 才注册通道，其他插件静�
 	assert.equal(connection.registrations.length, 1);
 });
 
-test("通道名带 /dsh-plugins. 包前缀且 authority 必填（不变量 8 + 位置事实）", async () => {
+test("通道名带 /dsh-plugins. 包前缀，且不再传 authority（p0-f：该选项已不存在）", async () => {
 	const connection = await boot();
 	const [entry] = connection.registrations;
 	assert.equal(entry.channel, CHANNEL);
 	assert.ok(entry.channel.startsWith("/dsh-plugins."), "包前缀防第三方撞名（/api 是宿主保留字）");
-	assert.deepEqual(entry.options, { authority: "trusted-host" });
+	// 0.2.1-rc.2 的 handle(channel, handler) 只有两参：trusted 判定上移到连接层的
+	// Host/Origin fence，没有 per-channel authority 可选值。留着第三参会让人以为
+	// 那里还在做鉴权，实际上它被静默忽略。
+	assert.equal(entry.options, undefined, "不得再传第三个参数");
 	assert.equal(typeof entry.handler, "function");
 });
 
@@ -92,11 +95,18 @@ test("llm 桩收到 meta-prompt 与草稿全文，且不带会话上下文（Q4�
 	assert.equal(options.messages[0].source.kind, "plugin");
 	assert.equal(typeof options.messages[0].id, "string", "Message.id 必填");
 
-	// meta-prompt 走 system 槽位：五条约束齐全（内容轴不进词典，故按特征断言）。
+	// meta-prompt 走 system 槽位（内容轴不进词典，故按特征断言）。
 	assert.equal(typeof options.system, "string");
-	for (const marker of ["1.", "2.", "3.", "4.", "5.", "same language as the draft", "1.5x"]) {
+	// I11：五条约束齐备，且禁新增条款必须在场。
+	for (const marker of ["1.", "2.", "3.", "4.", "5.", "same language as the draft", "Do not add facts"]) {
 		assert.ok(options.system.includes(marker), `meta-prompt 应含 ${marker}`);
 	}
+	// I11 的反向断言：旧「补充缺失上下文」句必须消失。它的存在与「禁新增事实」
+	// 直接冲突——两句同时在场时模型会照着前一句补内容。
+	assert.ok(!options.system.includes("add the context"), "不得再要求模型补充原文没有的上下文");
+	assert.ok(!options.system.includes("1.5x"), "长度倍数约束已由「只重排不扩写」取代");
+	assert.match(options.system, /leave it exactly as written/, "F1 保守失败条款在场");
+	assert.match(options.system, /already structured enough/, "F4 无需整理条款在场");
 	// purpose 是 'compaction' | 'session-title' 闭集，自定义值会被拒 → 必须省略。
 	assert.equal(options.purpose, undefined);
 });
@@ -237,4 +247,144 @@ test("超时与用户取消同时发生时，取消优先（弹层已关，超�
 	await settle();
 	const result = await pending;
 	assert.equal(result.error.code, "cancelled");
+});
+
+// ── noChange 形态（F4 / AC-12） ────────────────────────────────────────────
+
+test("noChange：产出与原文等价时置真（弹层据此禁用采纳）", async () => {
+	const draft = "改一下 README 的标题";
+	// 模型原样返回（含首尾空白差异）→ 视为无需整理
+	const llm = makeLlmStub().push(textStream("  " + draft + "  "));
+	const connection = await boot({ llm });
+	const result = await connection.invoke("optimize", { text: draft });
+	assert.equal(result.ok, true);
+	assert.equal(result.value.noChange, true, "产出与原文等价");
+	assert.equal(result.value.text, draft);
+});
+
+test("noChange：产出确有变化时为假", async () => {
+	const llm = makeLlmStub().push(textStream("- 改标题\n- 保持正文"));
+	const connection = await boot({ llm });
+	const result = await connection.invoke("optimize", { text: "帮我改下标题，正文别动" });
+	assert.equal(result.ok, true);
+	assert.equal(result.value.noChange, false);
+});
+
+// ── 计数器（候选 A：storageDomain；AC-13） ─────────────────────────────────
+
+/** 伪 storageDomain：内存表 + open 计数；open 可配置为抛错。 */
+function makeStorageDomain({ failOpen = false } = {}) {
+	const records = new Map();
+	const calls = { open: 0, put: 0, close: 0 };
+	const table = {
+		get: (key) => records.get(key),
+		put: async (key, value) => {
+			calls.put += 1;
+			records.set(key, value);
+		},
+	};
+	const stub = {
+		calls,
+		records,
+		async open(spec) {
+			calls.open += 1;
+			if (failOpen) throw new Error("version-mismatch");
+			return {
+				table: () => table,
+				close: async () => { calls.close += 1; },
+			};
+		},
+	};
+	return stub;
+}
+
+/** 起一个同时挂上 storageDomain 的 host fiber。 */
+async function bootWithDomain({ domain, llm } = {}) {
+	const connection = makeConnectionStub();
+	const { ctx } = makeHostCtx({ connection, llm: llm ?? makeLlmStub().push(textStream("optimized")) });
+	// makeHostCtx 只认识 connection/llm；storageDomain 通过 patch 注入面补上。
+	const inject = ctx.inject;
+	ctx.inject = (names, cb) => {
+		if (names.includes("storageDomain")) {
+			const pctx = { storageDomain: domain };
+			return cb(pctx);
+		}
+		return inject(names, cb);
+	};
+	mod.apply(ctx, { plugin: "promptopt" });
+	await settle();
+	return connection;
+}
+
+test("计数器：发起 / 采纳 / 放弃各记一次，采纳累加字符增减量", async () => {
+	const domain = makeStorageDomain();
+	const connection = await bootWithDomain({ domain });
+
+	// 两次发起（各一次成功 optimize）
+	await connection.invoke("optimize", { text: "abcd" });
+	await connection.invoke("optimize", { text: "efgh" });
+	// 一次采纳：原文 4 字符 → 产出 10 字符，+6
+	await connection.invoke("event", { event: "adopted", before: 4, after: 10 });
+	// 一次放弃
+	await connection.invoke("event", { event: "dismissed" });
+
+	const counters = await connection.invoke("counters");
+	assert.equal(counters.ok, true);
+	assert.equal(counters.value.started, 2);
+	assert.equal(counters.value.adopted, 1);
+	assert.equal(counters.value.dismissed, 1);
+	assert.equal(counters.value.charsDelta, 6);
+});
+
+test("计数器：字符增减量可为负（结构化重排往往更短）", async () => {
+	const domain = makeStorageDomain();
+	const connection = await bootWithDomain({ domain });
+	await connection.invoke("event", { event: "adopted", before: 40, after: 25 });
+	const counters = await connection.invoke("counters");
+	assert.equal(counters.value.charsDelta, -15);
+});
+
+test("计数器：storageDomain 缺席时端点仍在、计数全零（I8 软依赖降级）", async () => {
+	const connection = await boot();
+	const counters = await connection.invoke("counters");
+	assert.equal(counters.ok, true, "无计数器域也必须能应答");
+	assert.deepEqual(counters.value, { started: 0, adopted: 0, dismissed: 0, charsDelta: 0 });
+});
+
+test("计数器：域打不开（版本不符）时记警告并停用，不阻断 optimize", async () => {
+	const warns = [];
+	const domain = makeStorageDomain({ failOpen: true });
+	const connection = makeConnectionStub();
+	const llm = makeLlmStub().push(textStream("optimized"));
+	const { ctx } = makeHostCtx({ connection, llm, loggerWarns: warns });
+	const inject = ctx.inject;
+	ctx.inject = (names, cb) => {
+		if (names.includes("storageDomain")) return cb({ storageDomain: domain });
+		return inject(names, cb);
+	};
+	mod.apply(ctx, { plugin: "promptopt" });
+	await settle();
+
+	assert.ok(warns.some((w) => w.includes("计数器域不可用")), "应记录降级原因");
+	const result = await connection.invoke("optimize", { text: "draft" });
+	assert.equal(result.ok, true, "计数器坏掉不得阻断优化");
+});
+
+test("计数器：未知事件名返回 bad-request 且不计数", async () => {
+	const domain = makeStorageDomain();
+	const connection = await bootWithDomain({ domain });
+	const result = await connection.invoke("event", { event: "bogus" });
+	assert.equal(result.ok, false);
+	assert.equal(result.error.code, "bad-request");
+	const counters = await connection.invoke("counters");
+	assert.equal(counters.value.adopted, 0);
+});
+
+test("计数器：非整数长度参数按 0 处理（不写入 NaN）", async () => {
+	const domain = makeStorageDomain();
+	const connection = await bootWithDomain({ domain });
+	await connection.invoke("event", { event: "adopted", before: Number.NaN, after: "x" });
+	const counters = await connection.invoke("counters");
+	assert.equal(counters.value.charsDelta, 0);
+	assert.equal(counters.value.adopted, 1);
 });

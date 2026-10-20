@@ -113,16 +113,25 @@ for (const [i, line] of clientText.split("\n").entries()) {
 	}
 }
 
-// `provider` / `model` 是维度字段名。v0.6.0 分两批：第一批删 tokstats 的模型
-// 维度，第二批删 tokprev 的 TurnBadge（其文案含 "provider-reported"）。因此本项
-// 在第一批只扫 tokstats 段，批次二落地后再放宽到全文件——收敛过程而不是一步到位，
-// 避免把「第二批还没做」当成违规而让 guard 长期红着。
-const tokstatsBlock = clientText.match(/\/\/ ── plugin: tokstats[\s\S]*?(?=\/\/ ── plugin: |\/\/ ── plugin registry)/);
-if (tokstatsBlock !== null) {
-	for (const [i, line] of tokstatsBlock[0].split("\n").entries()) {
-		if (/\b(provider|model)\b/.test(line)) {
-			problems.push(`lib/client.js tokstats 段第 ${i + 1} 行: 出现 provider/model 维度 —— Q6 已删除该维度，wire 摘要与面板都不得含它（I1）`);
-		}
+// `provider` / `model` 是已删除的维度字段名。v0.6.0 两批都落地后，整个 client 产物
+// 都不该再把它们当**字段**用：第一批删了 tokstats 的模型维度，第二批删了 tokprev 的
+// TurnBadge（其文案原本写着 provider-reported）。
+//
+// 规则针对「维度用法」而不是这个词本身——`model` 在普通英文里是「模型」的意思，
+// 「The model call failed」「model select」这类文案与维度无关，按单词拦会逼着把
+// 用户可读的句子改坏。维度用法的形态是可枚举的：属性访问、下标、赋值键、对象字面量键。
+const DIMENSION_USE = [
+	/\bprovider\s*[:,]/,          // { provider: ... } / provider:
+	/\bmodel\s*[:,]/,             // { model: ... } / model:
+	/\.\s*(provider|model)\b/,    // x.provider / x.model
+	/\[\s*["'](provider|model)["']\s*\]/, // x["provider"]
+];
+for (const [i, line] of clientText.split("\n").entries()) {
+	// 注释行不算维度用法（维度相关的说明文字是允许的）
+	if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+	const hit = DIMENSION_USE.find((re) => re.test(line));
+	if (hit !== undefined) {
+		problems.push(`lib/client.js L${i + 1}: 出现 provider/model 维度用法 —— Q6 已删除该维度，wire 摘要与面板都不得含它（I1）：${line.trim().slice(0, 80)}`);
 	}
 }
 
