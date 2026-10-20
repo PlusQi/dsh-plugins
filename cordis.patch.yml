@@ -20,18 +20,17 @@
       name: 'dsh-plugins'
       config:
         plugin: tokprev
-    # tokstats: 侧栏脚按钮 + 弹层面板，跨会话 token 消耗统计（本包首个含
-    # host 半边实现的插件：扫 durable 会话日志聚合，经 session-projection
-    # 通道下发；checkpoint 落 DSH_HOME/storages/tokstats-checkpoint.json）。
-    # config.prices 可覆盖/追加内置 DeepSeek 官方价（元/Mtok，缺省用内置高峰
-    # 单价），按 provider → model 两层映射：
-    #   prices:
-    #     third-party-x:            # provider 路由键（日志 request/header / assistant/message.source）
-    #       some-model: { input: 2, inputCached: 0.2, output: 4 }
+    # tokstats: 侧栏列表项 + root `main` 全局面板（hook 已占 sidebar.footer.action，
+    # 全局面板的正路是 main keyed slot + ctx.layout.selectPanel）。host 半边注册一个
+    # per-session 投影单元：折叠结果由官方 session-projection-cache 持久化，本包不再
+    # 写任何自有存储文件。
+    #   windowDays: 折叠窗口天数（缺省 90）。超过窗口的明细被折进 epoch 合计，
+    #               读取期排除并改计 epoch，原始明细不删（面板的「全部」档位仍可查）。
     - id: tokstats
       name: 'dsh-plugins'
       config:
         plugin: tokstats
+        windowDays: 90
     # promptopt: composer dock 的「优化提示词」按钮 + 原文/优化文对照弹层。
     # 宿主半边注册 RPC 通道 /dsh-plugins.promptopt，走 ctx.llm 做一次旁路
     # 模型调用（骑已注册的第一个 provider/model 路由，无配置面）。通道随本行
