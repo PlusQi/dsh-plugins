@@ -10,95 +10,68 @@ All plugins live in a single pack (one repo = one profile bundle): install once 
 
 | Plugin      | Function                                                                                          |
 | ----------- | ------------------------------------------------------------------------------------------------- |
-| **tokprev** | "Next-turn input preview" below the Composer (context + queued + draft, live as you type) + a real usage badge on each turn's closing message (provider-reported: input / cache / output / call count) |
-| **tokstats** | Sidebar-footer button + popover: cross-session token consumption stats (period overview / by workspace / by model with cost / context-length buckets, today · this week · total switch) |
-| **promptopt** | Star-icon button in the composer's tool row (hover for the tooltip): hand the draft to the model for a rewrite before sending, compare original vs. optimized, and **adopt** it into the input only if you like it |
+| **tokprev** | Three-part preview below the Composer: next input · draft · est. output (only the draft increment the official ContextMeter cannot show) |
+| **tokstats** | "Token analytics" full panel in the sidebar: context-length distribution + weekly trend + workspace grouping + promptopt usage, with 90-day / 30-day / all-time windows |
+| **promptopt** | Star-icon button in the composer's tool row (hover for the tooltip): restructure the draft faithfully into structured input, compare original vs. restructured, and **adopt** it into the input only if you like it |
 
-> **tokprev** is a pure interface plugin; **tokstats** and **promptopt** also ship a host-side half (one aggregates session logs in the background, the other makes a single side-channel model call).
+> **tokprev** is a pure interface plugin; **tokstats** and **promptopt** also ship a host-side half (one registers a session projection unit and aggregates, the other makes a single side-channel model call).
 
 ## Language (Chinese / English)
 
 Plugins render their copy through the host locale service and **follow DSH Settings → General → Language**; the pack itself has no language switch.
 
 - Dictionaries are namespaced per plugin — `dsh-plugins.tokprev`, `dsh-plugins.tokstats` and `dsh-plugins.promptopt`.
-- promptopt splits **two axes**: UI copy follows the host language, while the **rewritten prompt follows the draft's language** (a Chinese draft still comes back Chinese on an English UI) — the rewrite is content, not UI copy.
+- promptopt splits **two axes**: UI copy follows the host language, while the **restructured prompt follows the draft's language** (a Chinese draft still comes back Chinese on an English UI) — the result is content, not UI copy.
 - With no explicit choice the host falls back to the browser language, and to en when it is neither zh nor en.
 - `locale` is a **hard dependency** (as in official UI packs): when the host has no locale service (or it is disabled by hand), the whole bundle does not load — the UI disappears with no log line, rather than showing half-translated copy.
-- Number notation (1.2K / 3.4M), context bucket ranges (`[0,4K)`) and the ¥ sign are not translated (they read the same in English, and ¥ is DeepSeek's official RMB pricing — CNY would mislead); the panel footer clock is fixed 24-hour, independent of the browser locale.
+- Number notation (1.2K / 3.4M) and context bucket ranges (`[0,4K)`) are not translated; the panel footer clock is fixed 24-hour, independent of the browser locale.
 
 ## tokprev
 
-A closed loop for per-turn token consumption: before you send, it tells you roughly how many tokens the next turn will feed in; after the turn ends, it reconciles with provider-reported actuals.
+Tells you roughly how many tokens the next turn will feed in. It **only fills the gap the host leaves**: the official ContextMeter already shows the absolute context figure with its system/tools/messages breakdown, and TurnUsagePanel already reports each turn's actual usage. What no official surface gives you is the draft, and the next-input total that includes it.
 
 ![tokprev in action](./docs/assets/tokprev-en.png)
 
-Note: the badges below are annotated on the English UI; the copy labels are translated by the host locale service.
+### Shape (below the Composer, three parts)
 
-### Pre-send preview (below the Composer)
+> **Next input ≈ 36.2K** · draft 0.3K · est. output 1.5K–3K
 
-Example:
-
-> **Next-turn input ≈ 36.2K (28%)** · context 33.8K + queued 0.1K + draft 0.3K · output estimate 1.5K–3K
-
-- **Next-turn input** = context base (`contextPressure.projectedTokens`, provider-anchored) + queued messages + draft — updates live as you type;
-- **Percentage** = next-turn input / context window;
+- **Next input** = the context anchor (`contextPressure.projectedTokens`) plus the draft estimate — updates live as you type;
+- **Draft** = a local heuristic estimate (characters / 4 plus overhead); no request is made;
 - **Output estimate** = the [P25, P75] range of the last 5 turns' actual `outputTokens`; `-` with no history, `≈value` with exactly one turn;
-- Fallback: with no provider anchor (fresh session) it falls back to a heuristic estimate (`contextBreakdown`, sum of three buckets) and prefixes the context figure with `*`; while the session is running the whole line hides (nothing to predict), and reappears when idle.
-
-### Per-turn actual usage badge
-
-A muted one-liner rendered on the closing assistant message of each turn (durable — survives page refresh and shows on history turns):
-
-> `This turn: input 12.4K (3 calls · cache 11.8K) · output 2.1K`
-
-- Data is the provider-reported truth, summed over all calls in the turn; billed input = `inputTokens + cacheReadTokens + cacheWriteTokens`;
-- Hover for exact token counts and call count.
-
-### A note on metrics (preview ≠ badge)
-
-- The **preview** estimates the prompt size of a single request;
-- The **badge** reports the **sum of billed input across all calls of the turn** — in a multi-step turn every step resends the full context, so the total is far larger than a single request; the cache-hit field (the "cache" segment in the badge) explains the gap. The two measure different things, both meaningfully.
+- Fallback: with no anchor the figure is prefixed with `*` (heuristic only); while the session is running the whole line hides (nothing to predict), and reappears when idle.
 
 ## tokstats
 
-Cross-session token consumption stats: the host's StatsLine only sees one session; this plugin scans every durable session log to answer "how much did I burn today", "which project eats the most", "how often do I run long contexts".
+Cross-session token statistics: the host folds tokens within one session only; this plugin answers "how much of my usage sits in long contexts" and "is this week heavier than last".
 
 ![tokstats panel](./docs/assets/tokstats-en.png)
 
-A "Token stats" button at the sidebar footer (an icon seat in rail mode) opens a popover panel:
+"Token analytics" in the sidebar list opens a **full panel**:
 
-- **Overview**: today / this week (Monday-based) / total — call count and the four buckets (tokens only, no money);
-- **By workspace**: top 8 (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted);
-- **By model**: provider/model rows with an estimated cost column (a "no price" marker when unpriced);
-- **Context length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)` with requests / input / output / cache-hit rate.
+- **Context length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)` with requests / input / output / cache-hit rate;
+- **Trend**: requests and input/output grouped by natural week (Monday-based);
+- **Workspaces**: a picker for all workspaces or one of them (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted);
+- **Prompt restructure usage**: promptopt's started / adopted / dismissed counts and the character delta on adoption (the section is hidden when promptopt is not enabled).
 
-Same accounting as the host: billed input = `inputTokens + cacheReadTokens + cacheWriteTokens`; the final `assistant/message.usage` of a `(turn, step)` replaces its usage-chunk sample (no double counting). Money figures are **estimates**: built-in DeepSeek official peak rates (CNY/Mtok, overridable), and the panel says so.
+Same accounting as the host: billed input = `inputTokens + cacheReadTokens + cacheWriteTokens`; the final `assistant/message.usage` of a `(turn, step)` replaces its usage-chunk sample (no double counting).
 
-Right after the first install the panel shows "Scanning…" until some session is opened (or a stats push arrives); missing host-side services show an explanatory note instead of an error.
+Three time windows — last 90 days, last 30 days, all time. Data is fetched when the panel opens and when you change the window or workspace; there is no resident push, because this panel does not need to tick.
 
-### Pricing config (optional)
-
-Built-in prices only cover the `deepseek-official` route. For third-party providers, append to your profile patch (`~/.dsh/profiles/web/cordis.patch.yml`, CNY/Mtok):
-
-```yaml
-- id: tokstats
-  patch:
-    config:
-      prices:
-        ark-codingplan:
-          glm-5.3: { input: 2, inputCached: 0.2, output: 4 }
-```
+Right after the first install the panel shows "Scanning…"; missing host-side services show an explanatory note instead of an error. **This plugin writes no files of its own**: the fold state is persisted by the official session projection cache, so deleting the old `storages/tokstats-checkpoint.json` from a previous version changes nothing.
 
 ## promptopt
 
-After typing a draft you no longer need a separate "please optimize this prompt" turn: hit the **star icon** in the tool row (hover for the tooltip, which changes to a reason when disabled), the model rewrites it, you compare original vs. optimized, and **adopt** it into the input only when you are happy. Close it and the draft is untouched.
+Restructures a spoken-style draft into input that is easier for a model to parse — faithfully. It does not expand your draft into an execution plan, and it does not invent requirements. Hit the **star icon** in the tool row (hover for the tooltip, which changes to a reason when disabled), compare original against restructured, and **adopt** it only when you are happy.
 
 - **Where it lives**: the right end of the composer card's **internal** tool row — between the model select and the send button, where your hand already is on the way to sending.
-- **Flow**: click (popover opens, spinner) → result arrives (original vs. optimized + elapsed time) → adopt or close. Closing, Esc, and clicking outside all count as cancel and abort the in-flight call.
+- **What restructuring does**: splits one run-on request carrying several asks into parallel items; resolves references like "that file" or "the error just now" back into the name the draft already uses; lifts constraint clauses (do not touch X, must use Y) out into explicit items; drops greetings, hedging and self-doubt. **It never adds facts, paths, constraints or steps the draft does not contain** — when it is unclear whether something was already there, the original wording stays.
+- **Nothing to restructure**: when the draft is already structured enough the model returns it unchanged, the popover says so, and the adopt button is disabled.
+- **Flow**: click (popover opens, spinner) → result arrives (original vs. restructured + elapsed time) → adopt or close. Closing, Esc, and clicking outside all count as cancel and abort the in-flight call.
 - **Disabled** (greyed out, with a tooltip explaining why): the draft is empty, or it contains a reference chip, an image attachment, or a `/` command token — adopting is a full-text replacement, so a model reshuffle would break reference offsets and image ownership. That is silent corruption, so the button simply refuses.
 - **Adopt semantics**: the snapshot taken when you clicked wins, and it is written back unconditionally. If you edited the draft while waiting, adopting overwrites those edits (no confirmation dialog).
-- **Model and cost**: one **side-channel call** through the host's `ctx.llm`, riding the first registered provider/model route. **No configuration surface** and no API key of its own; each click is one model call (input on the order of 1.5x the draft).
-- **Nothing on disk**: no checkpoint, no session log — purely in-memory. This call is **not** counted by tokstats (it never lands in the durable session log).
+- **Model and cost**: one **side-channel call** through the host's `ctx.llm`, riding the first registered provider/model route. **No configuration surface** and no API key of its own.
+- **No session log**: no session events, no log writes. This call is **not** counted by tokstats' token statistics (it never lands in the durable session log), but its started / adopted / dismissed **counts** are shown in the tokstats panel (official storage domain, survives a restart).
 - **Degrades**: when the model service is absent, clicking shows "The model call failed — please try again" instead of a blank screen.
 
 If the button does nothing or always errors after a DSH upgrade, check the host-contract list in the maintenance doc first.

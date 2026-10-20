@@ -2,6 +2,34 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
 
+## [0.6.0] - 2026-10-20
+
+> **破坏性变更**（四项，均可回滚）：
+> 1. **tokstats 面板入口变更**：侧栏底部按钮 + 弹层 → 侧栏列表项 + 全局面板。旧的 `sidebar.footer.action` 座位已被官方 cordis-panel 占用。
+> 2. **tokstats 成本与模型维度整体删除**：`config.prices` 不再存在，任何用它覆盖价格的 profile patch 会变成未知字段。实测 91.8% 调用走第三方 provider，本地估算没有可对账的权威价格来源。
+> 3. **tokstats 投影单元 `stateVersion` 由 1 提升到 2**：旧缓存行被版本检查丢弃并自动冷折叠重建，**不需要手工清缓存**。
+> 4. **tokprev 信息面收缩**：删除每轮真实消耗徽标（`conversation.chat.assistant-actions` 不再注册），预告行从「上下文 + 排队 + 草稿 + 占比」收为三点式。
+
+### Changed
+
+- **tokstats 宿主侧改为注册官方投影单元**：删除自建 checkpoint 文件（`storages/tokstats-checkpoint.json`）、persistence 适配层、revision 对账、flush 增量监听与防抖写盘。持久化与冷启动交给官方 session-projection-cache，**本插件不再写任何自有文件**。旧 checkpoint 文件留在原处不再被读写，确认无误后可手工删除。
+- **tokstats 客户端改为全局面板**：`sidebar.panellist` 列表项 + root `main` keyed slot。主体收敛到上下文桶分布 + 周趋势 + 工作区分组三块；弹层定位全套（`useLayoutEffect` + `resize` + `pointerdown` + Esc）随弹层一并删除。数据在打开 / 切窗口 / 切工作区时各拉一次，不做常驻推送。
+- **tokstats 时间窗改为三档窗口**：今日 / 本周 / 累计 → 近 90 天 / 近 30 天 / 全部。原三档在实测强度（5 天历史）下退化重复。
+- **tokprev 预告行改为三点式**：`下一轮输入 ≈ N · 草稿 M · 输出预估 X–Y`。上下文基线与窗口占比已被官方 ContextMeter 覆盖，排队估算与每轮徽标已被 TurnUsagePanel 覆盖，重复显示只是噪音。投影依赖因此只剩 `contextPressure` 一个。
+- **promptopt 定位从「润色」改为「保真结构化重排」**：新的 meta-prompt 禁止新增原文不存在的事实/路径/约束/步骤，不确定时保留原样，原文已足够结构化则原样返回。界面文案同步从「优化」改为「整理」。
+- **tokstats 面板新增 promptopt 使用计数**：发起 / 采纳 / 放弃与采纳后的字符增减。
+
+### Added
+
+- **promptopt「无需整理」形态**：产出与原文等价时弹层显示提示并禁用采纳按钮——采纳一个没有变化的文本没有意义。
+- **promptopt 计数器**：落官方存储域（`dsh_plugins_promptopt` 域），跨重启可查。发起 / 采纳 / 放弃分开计数，采纳另记字符增减量。存储域不可用时计数器静默停用，不影响优化功能。
+- **结构 guard 新增三项静态校验**：`lib/index.js` 无写盘调用、`lib/client.js` 无 `prices` 字面量、无 provider/model 维度用法。
+
+### Fixed
+
+- **`connection.rpc.handle` 的第三参数是死参数**：0.2.1-rc.2 起该方法只有两参，per-channel `authority` 选项已不存在（信任判定上移到连接层的 Host/Origin fence）。删掉它——留着只会让人以为那里还在做鉴权。
+- **fork 子会话的用量归并口径**：`readSession` 不返回 `seedLength`，改读 `inheritedEventCount`；对账验证 14 个存量会话的每一格数字与旧实现完全一致。
+
 ## [0.5.2] - 2026-08-30
 
 ### Changed
