@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { makeWebServerStub } from "./host-harness.mjs";
 import {
 	apply,
 	tokstatsAggregate,
@@ -379,23 +380,31 @@ function makeProjectionCache(cachedById) {
 	});
 }
 
-/** 伪 connection：捕获 rpc.handle 的注册参数，并可事后驱动 handler。 */
+/**
+ * 伪 connection：只提供本包实际使用的 `admit`，并把它接到自带的 webServer 桩上。
+ *
+ * 本包不复用 `connection.rpc.handle`（0.2.1-rc.2 上从第三方 context 调用必然抛
+ * cannot get property "webServer"），所以桩里**故意不提供** rpc.handle —— 实现若
+ * 回退到那条路径会立刻 TypeError，而不是悄悄测过。
+ */
 function makeConnection() {
-	const registrations = [];
-	return {
-		registrations,
-		rpc: {
-			handle(channel, handler, ...rest) {
-				registrations.push({ channel, handler, rest });
-				return () => Promise.resolve();
-			},
+	const server = makeWebServerStub();
+	const calls = { admit: 0 };
+	const stub = {
+		calls,
+		server,
+		admit() {
+			calls.admit += 1;
+			return {};
 		},
-		async invoke(endpoint, payload, index = 0) {
-			const entry = registrations[index];
-			if (entry === undefined) throw new Error(`尚无第 ${index} 个 RPC 注册`);
-			return entry.handler(endpoint, payload);
+		invoke(channel, endpoint, payload) {
+			return server.result(channel, endpoint, payload);
+		},
+		envelope(channel, endpoint, payload) {
+			return server.invoke(channel, endpoint, payload);
 		},
 	};
+	return stub;
 }
 
 /**
@@ -406,10 +415,19 @@ function makeConnection() {
  * 取它（inject 是「齐备才回调」，写进去会让缓存缺席时端点也不注册）。所以桩必须
  * 提供 `get`，且只认已被注入的服务名——凭空返回未注册服务等于给「用了宿主没有
  * 的服务」发通行证。
+ *
+ * `webServer` 默认在场：`connection.rpc.handle()` 把路由登记挂在**读取方**的
+ * fiber 上（内部访问 `owner.webServer`），少了它会抛
+ * `cannot get property "webServer" without inject` 而不注册通道——这是实测踩到的
+ * 真缺陷，桩必须按真实契约提供它，否则测不出「忘了注入」。
  */
-function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections = true, loggerWarns } = {}) {
-	const state = { registered: [], injectCalls: [] };
-	const provided = { connection, sessionQuery, sessionProjectionCache };
+function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections = true, webServer, loggerWarns } = {}) {
+	const state = { registered: [], injectCalls: [], effects: [] };
+	const hasWebServer = webServer !== null;
+	// 默认用 connection 自带的那份 webServer 桩：用例既能 `connection.invoke(...)`
+	// 驱动路由，又不必显式传两层桩。
+	const server = webServer ?? connection?.server ?? makeWebServerStub();
+	const provided = { connection, sessionQuery, sessionProjectionCache, webServer: hasWebServer ? server : null };
 	const ctx = {
 		logger: { warn: (...args) => { if (loggerWarns !== undefined) loggerWarns.push(args.join(" ")); } },
 		get(name) {
@@ -418,7 +436,13 @@ function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections
 		},
 		inject(names, cb) {
 			state.injectCalls.push(names);
-			const pctx = { get: (name) => ctx.get(name) };
+			// 真实 cordis 的 inject 子 ctx 也带 effect/on；缺了它们，
+			// `pctx.effect(() => pctx.webServer.register(...))` 会抛，路由静默不注册。
+			const pctx = {
+				get: (name) => ctx.get(name),
+				effect: (fn, label) => ctx.effect(fn, label),
+				on: (name, handler) => ctx.on(name, handler),
+			};
 			for (const name of names) {
 				if (name === "sessionProjections") {
 					if (projections === false) continue;
@@ -435,7 +459,14 @@ function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections
 			if (ready) cb(pctx);
 		},
 		on() { return () => {}; },
-		effect() { return () => {}; },
+		// cordis 的 effect 会**立刻执行**回调并保留其返回的清理函数；桩若只是吞掉
+		// 回调，`pctx.effect(() => pctx.webServer.register(route))` 就永远不会注册
+		// 路由——测试会以为「通道没注册」，实际是桩没跑。
+		effect(fn, label) {
+			const disposer = typeof fn === "function" ? fn() : undefined;
+			state.effects.push({ label, disposer });
+			return () => { if (typeof disposer === "function") disposer(); };
+		},
 	};
 	return { ctx, state };
 }
@@ -472,7 +503,7 @@ test("projection 缺席：不注册单元，且不抛错（I8）", () => {
 	assert.equal(state.registered.length, 0);
 });
 
-test("RPC 注册：通道正确，且只传两个参数（p0-f：authority 选项已不存在）", () => {
+test("RPC 注册：挂在 webServer 的 prefix 路由上，且**不**走 connection.rpc.handle", () => {
 	const connection = makeConnection();
 	const { ctx } = makeCtx({
 		connection,
@@ -480,16 +511,20 @@ test("RPC 注册：通道正确，且只传两个参数（p0-f：authority 选�
 		sessionProjectionCache: makeProjectionCache({}),
 	});
 	startTokstats(ctx);
-	assert.equal(connection.registrations.length, 1);
-	assert.equal(connection.registrations[0].channel, TOKSTATS_CHANNEL);
-	assert.equal(connection.registrations[0].rest.length, 0, "handle(channel, handler) 只有两参；传第三参是死参数");
+	assert.equal(connection.server.routes.length, 1);
+	const [route] = connection.server.routes;
+	assert.equal(route.path, TOKSTATS_CHANNEL);
+	// 前缀挂载：端点由通道自己认领（/summary、/promptopt）
+	assert.equal(route.kind, "prefix");
+	// connection 桩**没有** rpc 面：实现若回退到 connection.rpc.handle 会直接抛。
+	assert.equal(connection.calls.admit, 0, "admit 只在真正请求时调用，注册阶段不碰它");
 });
 
 test("sessionQuery 缺席：RPC 不注册，且不抛错（I8 / AC-8）", () => {
 	const connection = makeConnection();
 	const { ctx } = makeCtx({ connection, sessionProjectionCache: makeProjectionCache({}) });
 	assert.doesNotThrow(() => startTokstats(ctx));
-	assert.equal(connection.registrations.length, 0, "无 sessionQuery 时不得注册端点");
+	assert.equal(connection.server.routes.length, 0, "无 sessionQuery 时不得注册端点");
 });
 
 test("sessionProjectionCache 缺席：端点注册但不抛错、返回空聚合（I8 / AC-8）", async () => {
@@ -499,7 +534,7 @@ test("sessionProjectionCache 缺席：端点注册但不抛错、返回空聚合
 		sessionQuery: makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) }),
 	});
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(result.ok, true);
 	assert.equal(result.value.totals.calls, 0, "无缓存服务时没有摘要可折，聚合为空但不抛错");
 });
@@ -528,7 +563,7 @@ test("AC-7：cachedSnapshot 命中时零 I/O 读回摘要（不触发 coldSnapsh
 	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(result.ok, true);
 	assert.equal(cache.calls.coldSnapshot, 0, "缓存命中不得触发冷折叠");
 	assert.equal(query.calls.readSession, 0, "缓存命中不得读日志");
@@ -542,7 +577,7 @@ test("冷折叠兜底：缓存未命中时 readSession + coldSnapshot，数字�
 	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(result.ok, true);
 	assert.equal(cache.calls.coldSnapshot, 1);
 	assert.equal(query.calls.readSession, 1);
@@ -563,7 +598,7 @@ test("单会话 readSession 失败：跳过该会话，其余正常（不抛错�
 	);
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache, loggerWarns });
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(result.ok, true, "单会话失败不得让整次汇总失败");
 	assert.equal(result.value.totals.calls, 2, "另一会话仍被计入");
 	assert.ok(loggerWarns.some((line) => line.includes(HEADER.id)), "失败会话应有告警");
@@ -582,7 +617,7 @@ test("listSessions 抛错：端点返回错误信封而不是抛 500", async () 
 	});
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: makeProjectionCache({}) });
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(result.ok, false, "handler 抛异常会被宿主转成 500，故必须自己收成错误信封");
 	assert.equal(typeof result.error.code, "string");
 	assert.equal(typeof result.error.message, "string");
@@ -597,7 +632,7 @@ test("未知 endpoint：返回 bad-request 错误信封", async () => {
 		sessionProjectionCache: makeProjectionCache({}),
 	});
 	startTokstats(ctx);
-	const result = await connection.invoke("nope", {});
+	const result = await connection.invoke(TOKSTATS_CHANNEL, "nope", {});
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "bad-request");
 });
@@ -618,9 +653,9 @@ test("RPC 入参：windowDays 透传并影响窗口过滤", async () => {
 	const { ctx } = makeCtx({ connection, sessionQuery: makeSessionQuery([{ header: HEADER }], {}), sessionProjectionCache: cache });
 	startTokstats(ctx);
 	// 注：windowDays 是「近 N 天」，故 0 表示全部、365 才覆盖到 1 月。
-	const wide = await connection.invoke(TOKSTATS_ENDPOINT, { windowDays: 0 });
+	const wide = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, { windowDays: 0 });
 	assert.equal(wide.value.totals.calls, 6, "windowDays: 0 = 全部");
-	const narrow = await connection.invoke(TOKSTATS_ENDPOINT, { windowDays: 30 });
+	const narrow = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, { windowDays: 30 });
 	assert.equal(narrow.value.totals.calls, 1, "30 天窗口滤掉 1 月的格子");
 });
 
@@ -638,11 +673,11 @@ test("RPC 入参：windowDays 非正数回落行配置；workspace 透传", asyn
 		sessionProjectionCache: cache,
 	});
 	startTokstats(ctx);
-	const filtered = await connection.invoke(TOKSTATS_ENDPOINT, { workspace: other.cwd });
+	const filtered = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, { workspace: other.cwd });
 	assert.equal(filtered.value.totals.calls, 4);
 	assert.equal(filtered.value.workspace, other.cwd);
 	assert.deepEqual(filtered.value.workspaces.map((w) => w.path), [other.cwd]);
-	const fallback = await connection.invoke(TOKSTATS_ENDPOINT, { windowDays: -3 });
+	const fallback = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, { windowDays: -3 });
 	assert.equal(fallback.value.windowDays, 90, "非正数回落行配置缺省 90");
 });
 
@@ -661,7 +696,7 @@ test("行 config.windowDays 生效（缺省 90）", async () => {
 	});
 	const { ctx } = makeCtx({ connection, sessionQuery: makeSessionQuery([{ header: HEADER }], {}), sessionProjectionCache: cache });
 	startTokstats(ctx, { windowDays: 10 });
-	const result = await connection.invoke(TOKSTATS_ENDPOINT, {});
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(result.value.windowDays, 10);
 	assert.equal(result.value.totals.calls, 1, "10 天窗口滤掉 1 月的格子");
 });
@@ -692,7 +727,7 @@ test("E1 折叠区间在读取期排除，避免与 epoch 合计双计", async (
 		sessionProjectionCache: cache,
 	});
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_ENDPOINT, { windowDays: 0 });
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, { windowDays: 0 });
 	assert.equal(result.value.totals.calls, 3, "区间内明细跳过、epoch 按桶合计计入（不双计）");
 	assert.equal(result.value.buckets[1].calls, 2, "epoch 的桶粒度必须保住");
 	assert.equal(result.value.buckets[0].calls, 1);
@@ -704,5 +739,55 @@ test("apply 分发：非 tokstats 插件不触碰 tokstats 的注册", () => {
 	const { ctx, state } = makeCtx({ connection, sessionQuery: makeSessionQuery([], {}), sessionProjectionCache: makeProjectionCache({}) });
 	apply(ctx, { plugin: "tokprev" });
 	assert.equal(state.injectCalls.length, 0);
-	assert.equal(connection.registrations.length, 0);
+	assert.equal(connection.server.routes.length, 0);
 });
+
+test("RPC 注册依赖 webServer 注入（实测踩到：漏了它 handle() 会抛，通道静默不注册）", async () => {
+	const connection = makeConnection();
+	const { ctx } = makeCtx({
+		connection,
+		sessionQuery: makeSessionQuery([], {}),
+		sessionProjectionCache: makeProjectionCache({}),
+		webServer: null, // 模拟读取方 ctx 没有注入 webServer
+	});
+	startTokstats(ctx);
+	assert.equal(connection.server.routes.length, 0, "webServer 缺席时不得注册通道（inject 不触发）");
+});
+
+test("RPC 注册成功时往 stderr 留一行可检索记录（通道静默不注册最难查）", async () => {
+	const connection = makeConnection();
+	const { ctx } = makeCtx({
+		connection,
+		sessionQuery: makeSessionQuery([], {}),
+		sessionProjectionCache: makeProjectionCache({}),
+	});
+	const written = [];
+	const original = process.stderr.write;
+	process.stderr.write = (chunk) => { written.push(String(chunk)); return true; };
+	try {
+		startTokstats(ctx);
+	} finally {
+		process.stderr.write = original;
+	}
+	assert.equal(connection.server.routes.length, 1);
+	assert.ok(written.some((line) => line.includes("[dsh-plugins]") && line.includes("已注册 RPC 通道")), "应留下注册成功的诊断行");
+});
+
+
+
+
+
+test("零 step 与真实 step 相邻时互不干扰", () => {
+	const state = fold([
+		messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 5000, outputTokens: 60 }),
+		chunkEvent(1, T(26, 10, 1), 1, 2, { inputTokens: 0, outputTokens: 0 }),
+	]);
+	assert.equal(state.rows.length, 2, "两个不同桶各一格");
+	const real = state.rows.find((c) => c.b !== 0);
+	const zero = state.rows.find((c) => c.b === 0);
+	assert.equal(real.calls, 1);
+	assert.equal(real.out, 60, "真实 step 的数字不受零 step 影响");
+	assert.equal(zero.calls, 1);
+	assert.equal(zero.in, 0);
+});
+

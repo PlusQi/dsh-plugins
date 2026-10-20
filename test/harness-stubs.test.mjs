@@ -5,7 +5,7 @@
 // abort 传播、handler 捕获、inject 的齐备语义。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { abortError, makeConnectionStub, makeHostCtx, makeLlmStub, textStream } from "./host-harness.mjs";
+import { abortError, makeConnectionStub, makeHostCtx, makeLlmStub, makeWebServerStub, textStream } from "./host-harness.mjs";
 import { fireDocument, fireWindow, makeReactMock, makeRpcStub } from "./client-harness.mjs";
 
 async function collect(stream) {
@@ -14,27 +14,40 @@ async function collect(stream) {
 	return out;
 }
 
-test("connection 桩：rpc.handle 捕获注册参数，invoke 驱动 handler 并透传 signal", async () => {
-	const conn = makeConnectionStub();
+test("webServer 桩：捕获注册的路由，invoke 驱动 handler 并拼出 url", async () => {
+	const server = makeWebServerStub();
 	const seen = [];
-	conn.rpc.handle("/chan", async (endpoint, payload, signal) => {
-		seen.push({ endpoint, payload, aborted: signal?.aborted === true });
-		return { ok: true, echoed: payload };
-	}, { authority: "trusted-host" });
+	server.register({
+		kind: "prefix",
+		path: "/chan",
+		handler: async (req, res) => {
+			seen.push({ method: req.method, url: req.url, contentType: req.headers["content-type"] });
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ type: "server-response", rpcId: "x", result: { ok: true } }));
+		},
+	});
+	assert.equal(server.routes.length, 1);
+	assert.equal(server.routes[0].path, "/chan");
 
-	assert.equal(conn.registrations.length, 1);
-	assert.equal(conn.registrations[0].channel, "/chan");
-	assert.deepEqual(conn.registrations[0].options, { authority: "trusted-host" });
-
-	const controller = new AbortController();
-	const result = await conn.invoke("optimize", { text: "hi" }, controller.signal);
-	assert.deepEqual(result, { ok: true, echoed: { text: "hi" } });
-	assert.deepEqual(seen, [{ endpoint: "optimize", payload: { text: "hi" }, aborted: false }]);
+	const envelope = await server.invoke("/chan", "optimize", { text: "hi" });
+	assert.deepEqual(envelope.result, { ok: true });
+	assert.equal(seen.length, 1);
+	assert.equal(seen[0].method, "POST");
+	assert.equal(seen[0].url, "/chan/optimize", "通道 + 端点拼成 url");
+	assert.equal(seen[0].contentType, "application/json");
 });
 
-test("connection 桩：未注册时 invoke 抛错（实现漏注册不能被静默吞掉）", () => {
-	const conn = makeConnectionStub();
-	assert.throws(() => conn.invoke("optimize", {}), /尚无第 0 个注册/);
+test("webServer 桩：未注册时 invoke 拒绝（实现漏注册不能被静默吞掉）", async () => {
+	const server = makeWebServerStub();
+	// invoke 是 async：未注册时是 reject 而不是同步 throw。
+	await assert.rejects(() => server.invoke("/nope", "optimize", {}), /没有注册通道/);
+});
+
+test("connection 桩：只暴露 admit，回退到 connection.rpc 会立刻抛错", () => {
+	const server = makeWebServerStub();
+	const conn = makeConnectionStub(server);
+	assert.deepEqual(conn.admit({}), {}, "admit 放行时返回空对象（无 rejection 字段）");
+	assert.throws(() => conn.rpc, /本包只用 admit/, "回退到 connection.rpc.handle 必须立刻失败");
 });
 
 test("llm 桩：正常流产出全部 chunk 并结算 settled", async () => {

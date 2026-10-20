@@ -5,7 +5,7 @@
 // 钉的是宿主契约能不能站住——信封形状、错误码闭集、abort 是否贯穿、超时归谁。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeConnectionStub, makeHostCtx, makeLlmStub, textStream } from "./host-harness.mjs";
+import { makeConnectionStub, makeHostCtx, makeLlmStub, makeWebServerStub, textStream } from "./host-harness.mjs";
 
 const mod = await import("../lib/index.js");
 
@@ -19,39 +19,39 @@ async function settle() {
 
 /** 起一个带 promptopt 通道的 host fiber。 */
 async function boot({ llm, timeoutMs } = {}) {
-	const connection = makeConnectionStub();
-	const { ctx } = makeHostCtx({ connection, llm: llm ?? makeLlmStub().push(textStream("optimized", USAGE)) });
+	const server = makeWebServerStub();
+	const connection = makeConnectionStub(server);
+	const { ctx } = makeHostCtx({ connection, llm: llm ?? makeLlmStub().push(textStream("optimized", USAGE)), webServer: server });
 	mod.apply(ctx, { plugin: "promptopt", ...(timeoutMs === undefined ? {} : { timeoutMs }) });
 	await settle();
-	return connection;
+	return { connection, server };
 }
 
 // ── 分发与通道注册 ─────────────────────────────────────────────────────────
 
 test("分发框架：config.plugin=promptopt 才注册通道，其他插件静默跳过", async () => {
-	const connection = makeConnectionStub();
+	const server = makeWebServerStub();
+	const connection = makeConnectionStub(server);
 	const llm = makeLlmStub().push(textStream("x"));
-	const { ctx } = makeHostCtx({ connection, llm });
+	const { ctx } = makeHostCtx({ connection, llm, webServer: server });
 	mod.apply(ctx, { plugin: "tokprev" });
 	mod.apply(ctx, { plugin: "tokstats" });
 	mod.apply(ctx, undefined);
 	await settle();
-	assert.equal(connection.registrations.length, 0, "非 promptopt 行不应注册通道");
+	assert.equal(server.routes.length, 0, "非 promptopt 行不应注册通道");
 
 	mod.apply(ctx, { plugin: "promptopt" });
 	await settle();
-	assert.equal(connection.registrations.length, 1);
+	assert.equal(server.routes.length, 1);
 });
 
-test("通道名带 /dsh-plugins. 包前缀，且不再传 authority（p0-f：该选项已不存在）", async () => {
-	const connection = await boot();
-	const [entry] = connection.registrations;
-	assert.equal(entry.channel, CHANNEL);
-	assert.ok(entry.channel.startsWith("/dsh-plugins."), "包前缀防第三方撞名（/api 是宿主保留字）");
-	// 0.2.1-rc.2 的 handle(channel, handler) 只有两参：trusted 判定上移到连接层的
-	// Host/Origin fence，没有 per-channel authority 可选值。留着第三参会让人以为
-	// 那里还在做鉴权，实际上它被静默忽略。
-	assert.equal(entry.options, undefined, "不得再传第三个参数");
+test("通道名带 /dsh-plugins. 包前缀，且挂在 webServer 的 prefix 路由上", async () => {
+	const { server } = await boot();
+	assert.equal(server.routes.length, 1);
+	const [entry] = server.routes;
+	assert.equal(entry.path, CHANNEL);
+	assert.equal(entry.kind, "prefix", "前缀挂载，端点由通道自己认领（与官方 RPC 通道同构）");
+	assert.ok(entry.path.startsWith("/dsh-plugins."), "包前缀防第三方撞名（/api 是宿主保留字）");
 	assert.equal(typeof entry.handler, "function");
 });
 
@@ -63,19 +63,21 @@ test("connection 缺席 → 通道不注册，不抛错（硬规则 6 降级）"
 });
 
 test("llm 缺席 → 通道不注册，不抛错（硬规则 6 降级）", async () => {
-	const connection = makeConnectionStub();
-	const { ctx } = makeHostCtx({ connection }); // 只给 connection
+	const server = makeWebServerStub();
+	const connection = makeConnectionStub(server);
+	// 只给 connection + webServer，不给 llm → inject 不触发
+	const { ctx } = makeHostCtx({ connection, webServer: server });
 	assert.doesNotThrow(() => mod.apply(ctx, { plugin: "promptopt" }));
 	await settle();
-	assert.equal(connection.registrations.length, 0);
+	assert.equal(server.routes.length, 0);
 });
 
 // ── 成功路径 ───────────────────────────────────────────────────────────────
 
 test("成功：value 信封承载优化文 / 耗时 / usage（摊平会被客户端 zod strip）", async () => {
 	const llm = makeLlmStub().push(textStream("更好的提示词", USAGE));
-	const connection = await boot({ llm });
-	const result = await connection.invoke("optimize", { text: "帮我写点东西" });
+	const { connection } = await boot({ llm });
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "帮我写点东西" });
 	assert.equal(result.ok, true);
 	assert.equal(result.value.text, "更好的提示词");
 	assert.equal(typeof result.value.durationMs, "number");
@@ -84,8 +86,8 @@ test("成功：value 信封承载优化文 / 耗时 / usage（摊平会被客户
 
 test("llm 桩收到 meta-prompt 与草稿全文，且不带会话上下文（Q4）", async () => {
 	const llm = makeLlmStub().push(textStream("optimized"));
-	const connection = await boot({ llm });
-	await connection.invoke("optimize", { text: "写个排序函数" });
+	const { connection } = await boot({ llm });
+	await connection.invoke(CHANNEL, "optimize", { text: "写个排序函数" });
 	const options = llm.calls[0].options;
 
 	assert.equal(llm.calls.length, 1, "一次 optimize 只应触发一次模型调用");
@@ -119,16 +121,16 @@ test("路由按注册序取首个可用 provider/model（零配置面，Q6）", 
 		{ provider: "p-first", id: "m-b", name: "B" },
 		{ provider: "p-second", id: "m-c", name: "C" },
 	];
-	const connection = await boot({ llm });
-	await connection.invoke("optimize", { text: "draft" });
+	const { connection } = await boot({ llm });
+	await connection.invoke(CHANNEL, "optimize", { text: "draft" });
 	assert.equal(llm.calls[0].options.provider, "p-first");
 	assert.equal(llm.calls[0].options.model, "m-a");
 });
 
 test("usage 缺席时不下发该字段（允许差异：拿不到就不显示）", async () => {
 	const llm = makeLlmStub().push(textStream("optimized")); // textStream 不传 usage
-	const connection = await boot({ llm });
-	const result = await connection.invoke("optimize", { text: "draft" });
+	const { connection } = await boot({ llm });
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "draft" });
 	assert.equal(result.ok, true);
 	assert.equal("usage" in result.value, false);
 });
@@ -137,9 +139,9 @@ test("usage 缺席时不下发该字段（允许差异：拿不到就不显示�
 
 test("草稿预检：空 / 非字符串 / 超长 → bad-request", async () => {
 	const llm = makeLlmStub().push(textStream("optimized"));
-	const connection = await boot({ llm });
+	const { connection } = await boot({ llm });
 	for (const payload of [{ text: "" }, { text: "   " }, {}, { text: 42 }, { text: "x".repeat(65537) }, null]) {
-		const result = await connection.invoke("optimize", payload);
+		const result = await connection.invoke(CHANNEL, "optimize", payload);
 		assert.equal(result.ok, false, `payload ${JSON.stringify(payload)} 应被拒`);
 		assert.equal(result.error.code, "bad-request");
 	}
@@ -147,15 +149,15 @@ test("草稿预检：空 / 非字符串 / 超长 → bad-request", async () => {
 });
 
 test("上限按 UTF-16 长度卡（与浏览器 String.length 同口径）", async () => {
-	const connection = await boot();
-	const atLimit = await connection.invoke("optimize", { text: "x".repeat(65536) });
+	const { connection } = await boot();
+	const atLimit = await connection.invoke(CHANNEL, "optimize", { text: "x".repeat(65536) });
 	assert.equal(atLimit.ok, true, "恰好等于上限应放行");
 });
 
 test("llm 流抛错 → model-unavailable（不占用只留给超时的 internal）", async () => {
 	const llm = makeLlmStub().push(new Error("provider down"));
-	const connection = await boot({ llm });
-	const result = await connection.invoke("optimize", { text: "draft" });
+	const { connection } = await boot({ llm });
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "draft" });
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "model-unavailable");
 	assert.deepEqual(result.error.details, { provider: "deepseek-official", model: "deepseek-v4-flash" });
@@ -166,37 +168,38 @@ test("模型产出为空 / finish 非 stop → model-unavailable", async () => {
 		{ type: "text-delta", index: 0, text: "   " },
 		{ type: "finish", reason: { kind: "stop" } },
 	]);
-	const c1 = await boot({ llm: empty });
-	assert.equal((await c1.invoke("optimize", { text: "d" })).error.code, "model-unavailable");
+	const { connection: c1 } = await boot({ llm: empty });
+	assert.equal((await c1.invoke(CHANNEL, "optimize", { text: "d" })).error.code, "model-unavailable");
 
 	const truncated = makeLlmStub().push([
 		{ type: "text-delta", index: 0, text: "partial" },
 		{ type: "finish", reason: { kind: "max-tokens" } },
 	]);
-	const c2 = await boot({ llm: truncated });
-	assert.equal((await c2.invoke("optimize", { text: "d" })).error.code, "model-unavailable");
+	const { connection: c2 } = await boot({ llm: truncated });
+	assert.equal((await c2.invoke(CHANNEL, "optimize", { text: "d" })).error.code, "model-unavailable");
 });
 
 test("无已注册路由 → model-unavailable（details 用 unknown 占位满足 schema）", async () => {
 	const llm = makeLlmStub().push(textStream("optimized"));
 	llm.providers = [];
-	const connection = await boot({ llm });
-	const result = await connection.invoke("optimize", { text: "draft" });
+	const { connection } = await boot({ llm });
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "draft" });
 	assert.equal(result.error.code, "model-unavailable");
 	assert.deepEqual(result.error.details, { provider: "unknown", model: "unknown" });
 	assert.equal(llm.calls.length, 0, "无路由不应发起调用");
 });
 
 test("端点不匹配 → bad-request（通道是前缀挂载，端点要自己认领）", async () => {
-	const connection = await boot();
-	const result = await connection.invoke("something-else", { text: "draft" });
+	const { connection } = await boot();
+	// 通道前缀认领后，未知端点由实现自己判 bad-request
+	const result = await connection.invoke(CHANNEL, "something-else", { text: "draft" });
 	assert.equal(result.error.code, "bad-request");
 });
 
 test("错误响应不含人类可读文案：message 就是机器码（不变量 3）", async () => {
 	const llm = makeLlmStub().push(new Error("boom"));
-	const connection = await boot({ llm });
-	const result = await connection.invoke("optimize", { text: "draft" });
+	const { connection } = await boot({ llm });
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "draft" });
 	assert.equal(result.error.message, result.error.code, "host 侧无 locale 服务，不得拼人类可读串");
 });
 
@@ -204,9 +207,9 @@ test("错误响应不含人类可读文案：message 就是机器码（不变量
 
 test("abort 贯穿：浏览器取消 → model 调用被中止，返回 cancelled", async () => {
 	const llm = makeLlmStub().push("hang");
-	const connection = await boot({ llm });
+	const { connection } = await boot({ llm });
 	const controller = new AbortController();
-	const pending = connection.invoke("optimize", { text: "draft" }, controller.signal);
+	const pending = connection.invoke(CHANNEL, "optimize", { text: "draft" }, controller.signal);
 	await settle();
 	assert.equal(llm.calls.length, 1, "调用应已发起");
 	controller.abort();
@@ -219,19 +222,19 @@ test("abort 贯穿：浏览器取消 → model 调用被中止，返回 cancelle
 
 test("进入时已 abort → cancelled，且不发起模型调用", async () => {
 	const llm = makeLlmStub().push(textStream("optimized"));
-	const connection = await boot({ llm });
+	const { connection } = await boot({ llm });
 	const controller = new AbortController();
 	controller.abort();
-	const result = await connection.invoke("optimize", { text: "draft" }, controller.signal);
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "draft" }, controller.signal);
 	assert.equal(result.error.code, "cancelled");
 	assert.equal(llm.calls.length, 0, "已取消的请求不该烧 token");
 });
 
 test("60s 截止（测试注入 5ms）：超时 → internal，且链路被中止", async () => {
 	const llm = makeLlmStub().push("hang");
-	const connection = await boot({ llm, timeoutMs: 5 });
+	const { connection } = await boot({ llm, timeoutMs: 5 });
 	const controller = new AbortController();
-	const result = await connection.invoke("optimize", { text: "draft" }, controller.signal);
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "draft" }, controller.signal);
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "internal");
 	assert.equal(llm.calls[0].aborted, true, "超时必须中止 in-flight 调用，不能继续烧");
@@ -240,9 +243,9 @@ test("60s 截止（测试注入 5ms）：超时 → internal，且链路被中�
 
 test("超时与用户取消同时发生时，取消优先（弹层已关，超时文案无意义）", async () => {
 	const llm = makeLlmStub().push("hang");
-	const connection = await boot({ llm, timeoutMs: 5 });
+	const { connection } = await boot({ llm, timeoutMs: 5 });
 	const controller = new AbortController();
-	const pending = connection.invoke("optimize", { text: "draft" }, controller.signal);
+	const pending = connection.invoke(CHANNEL, "optimize", { text: "draft" }, controller.signal);
 	controller.abort();
 	await settle();
 	const result = await pending;
@@ -255,8 +258,8 @@ test("noChange：产出与原文等价时置真（弹层据此禁用采纳）", 
 	const draft = "改一下 README 的标题";
 	// 模型原样返回（含首尾空白差异）→ 视为无需整理
 	const llm = makeLlmStub().push(textStream("  " + draft + "  "));
-	const connection = await boot({ llm });
-	const result = await connection.invoke("optimize", { text: draft });
+	const { connection } = await boot({ llm });
+	const result = await connection.invoke(CHANNEL, "optimize", { text: draft });
 	assert.equal(result.ok, true);
 	assert.equal(result.value.noChange, true, "产出与原文等价");
 	assert.equal(result.value.text, draft);
@@ -264,8 +267,8 @@ test("noChange：产出与原文等价时置真（弹层据此禁用采纳）", 
 
 test("noChange：产出确有变化时为假", async () => {
 	const llm = makeLlmStub().push(textStream("- 改标题\n- 保持正文"));
-	const connection = await boot({ llm });
-	const result = await connection.invoke("optimize", { text: "帮我改下标题，正文别动" });
+	const { connection } = await boot({ llm });
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "帮我改下标题，正文别动" });
 	assert.equal(result.ok, true);
 	assert.equal(result.value.noChange, false);
 });
@@ -300,9 +303,10 @@ function makeStorageDomain({ failOpen = false } = {}) {
 
 /** 起一个同时挂上 storageDomain 的 host fiber。 */
 async function bootWithDomain({ domain, llm } = {}) {
-	const connection = makeConnectionStub();
-	const { ctx } = makeHostCtx({ connection, llm: llm ?? makeLlmStub().push(textStream("optimized")) });
-	// makeHostCtx 只认识 connection/llm；storageDomain 通过 patch 注入面补上。
+	const server = makeWebServerStub();
+	const connection = makeConnectionStub(server);
+	const { ctx } = makeHostCtx({ connection, llm: llm ?? makeLlmStub().push(textStream("optimized")), webServer: server });
+	// makeHostCtx 只认识 connection/llm/webServer；storageDomain 走 patch 注入面补上。
 	const inject = ctx.inject;
 	ctx.inject = (names, cb) => {
 		if (names.includes("storageDomain")) {
@@ -321,14 +325,14 @@ test("计数器：发起 / 采纳 / 放弃各记一次，采纳累加字符增�
 	const connection = await bootWithDomain({ domain });
 
 	// 两次发起（各一次成功 optimize）
-	await connection.invoke("optimize", { text: "abcd" });
-	await connection.invoke("optimize", { text: "efgh" });
+	await connection.invoke(CHANNEL, "optimize", { text: "abcd" });
+	await connection.invoke(CHANNEL, "optimize", { text: "efgh" });
 	// 一次采纳：原文 4 字符 → 产出 10 字符，+6
-	await connection.invoke("event", { event: "adopted", before: 4, after: 10 });
+	await connection.invoke(CHANNEL, "event", { event: "adopted", before: 4, after: 10 });
 	// 一次放弃
-	await connection.invoke("event", { event: "dismissed" });
+	await connection.invoke(CHANNEL, "event", { event: "dismissed" });
 
-	const counters = await connection.invoke("counters");
+	const counters = await connection.invoke(CHANNEL, "counters");
 	assert.equal(counters.ok, true);
 	assert.equal(counters.value.started, 2);
 	assert.equal(counters.value.adopted, 1);
@@ -339,14 +343,14 @@ test("计数器：发起 / 采纳 / 放弃各记一次，采纳累加字符增�
 test("计数器：字符增减量可为负（结构化重排往往更短）", async () => {
 	const domain = makeStorageDomain();
 	const connection = await bootWithDomain({ domain });
-	await connection.invoke("event", { event: "adopted", before: 40, after: 25 });
-	const counters = await connection.invoke("counters");
+	await connection.invoke(CHANNEL, "event", { event: "adopted", before: 40, after: 25 });
+	const counters = await connection.invoke(CHANNEL, "counters");
 	assert.equal(counters.value.charsDelta, -15);
 });
 
 test("计数器：storageDomain 缺席时端点仍在、计数全零（I8 软依赖降级）", async () => {
-	const connection = await boot();
-	const counters = await connection.invoke("counters");
+	const { connection } = await boot();
+	const counters = await connection.invoke(CHANNEL, "counters");
 	assert.equal(counters.ok, true, "无计数器域也必须能应答");
 	assert.deepEqual(counters.value, { started: 0, adopted: 0, dismissed: 0, charsDelta: 0 });
 });
@@ -354,9 +358,10 @@ test("计数器：storageDomain 缺席时端点仍在、计数全零（I8 软依
 test("计数器：域打不开（版本不符）时记警告并停用，不阻断 optimize", async () => {
 	const warns = [];
 	const domain = makeStorageDomain({ failOpen: true });
-	const connection = makeConnectionStub();
+	const server = makeWebServerStub();
+	const connection = makeConnectionStub(server);
 	const llm = makeLlmStub().push(textStream("optimized"));
-	const { ctx } = makeHostCtx({ connection, llm, loggerWarns: warns });
+	const { ctx } = makeHostCtx({ connection, llm, webServer: server, loggerWarns: warns });
 	const inject = ctx.inject;
 	ctx.inject = (names, cb) => {
 		if (names.includes("storageDomain")) return cb({ storageDomain: domain });
@@ -366,33 +371,34 @@ test("计数器：域打不开（版本不符）时记警告并停用，不阻�
 	await settle();
 
 	assert.ok(warns.some((w) => w.includes("计数器域不可用")), "应记录降级原因");
-	const result = await connection.invoke("optimize", { text: "draft" });
+	const result = await connection.invoke(CHANNEL, "optimize", { text: "draft" });
 	assert.equal(result.ok, true, "计数器坏掉不得阻断优化");
 });
 
 test("计数器：未知事件名返回 bad-request 且不计数", async () => {
 	const domain = makeStorageDomain();
 	const connection = await bootWithDomain({ domain });
-	const result = await connection.invoke("event", { event: "bogus" });
+	const result = await connection.invoke(CHANNEL, "event", { event: "bogus" });
 	assert.equal(result.ok, false);
 	assert.equal(result.error.code, "bad-request");
-	const counters = await connection.invoke("counters");
+	const counters = await connection.invoke(CHANNEL, "counters");
 	assert.equal(counters.value.adopted, 0);
 });
 
 test("计数器：非整数长度参数按 0 处理（不写入 NaN）", async () => {
 	const domain = makeStorageDomain();
 	const connection = await bootWithDomain({ domain });
-	await connection.invoke("event", { event: "adopted", before: Number.NaN, after: "x" });
-	const counters = await connection.invoke("counters");
+	await connection.invoke(CHANNEL, "event", { event: "adopted", before: Number.NaN, after: "x" });
+	const counters = await connection.invoke(CHANNEL, "counters");
 	assert.equal(counters.value.charsDelta, 0);
 	assert.equal(counters.value.adopted, 1);
 });
 
 test("计数器域打不开时往 stderr 写一行诊断（logger.warn 不落宿主 stdout，静默失败最难查）", async () => {
 	const domain = makeStorageDomain({ failOpen: true });
-	const connection = makeConnectionStub();
-	const { ctx } = makeHostCtx({ connection, llm: makeLlmStub().push(textStream("x")) });
+	const server = makeWebServerStub();
+	const connection = makeConnectionStub(server);
+	const { ctx } = makeHostCtx({ connection, llm: makeLlmStub().push(textStream("x")), webServer: server });
 	const inject = ctx.inject;
 	ctx.inject = (names, cb) => (names.includes("storageDomain") ? cb({ storageDomain: domain }) : inject(names, cb));
 
@@ -407,3 +413,10 @@ test("计数器域打不开时往 stderr 写一行诊断（logger.warn 不落宿
 	}
 	assert.ok(written.some((line) => line.includes("[dsh-plugins]") && line.includes("计数器域不可用")), "应留下可检索的诊断行");
 });
+
+
+
+
+
+
+
