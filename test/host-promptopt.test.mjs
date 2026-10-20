@@ -388,3 +388,22 @@ test("计数器：非整数长度参数按 0 处理（不写入 NaN）", async (
 	assert.equal(counters.value.charsDelta, 0);
 	assert.equal(counters.value.adopted, 1);
 });
+
+test("计数器域打不开时往 stderr 写一行诊断（logger.warn 不落宿主 stdout，静默失败最难查）", async () => {
+	const domain = makeStorageDomain({ failOpen: true });
+	const connection = makeConnectionStub();
+	const { ctx } = makeHostCtx({ connection, llm: makeLlmStub().push(textStream("x")) });
+	const inject = ctx.inject;
+	ctx.inject = (names, cb) => (names.includes("storageDomain") ? cb({ storageDomain: domain }) : inject(names, cb));
+
+	const written = [];
+	const original = process.stderr.write;
+	process.stderr.write = (chunk) => { written.push(String(chunk)); return true; };
+	try {
+		mod.apply(ctx, { plugin: "promptopt" });
+		await settle();
+	} finally {
+		process.stderr.write = original;
+	}
+	assert.ok(written.some((line) => line.includes("[dsh-plugins]") && line.includes("计数器域不可用")), "应留下可检索的诊断行");
+});
