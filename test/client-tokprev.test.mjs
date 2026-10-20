@@ -1,8 +1,11 @@
-// tokprev client 半边测试：预告行与徽标的文案走词典断言（中英各一遍）。
+// tokprev client 半边测试（v0.6.0 第二批）：三点式预告行，文案走词典断言（中英各一遍）。
 // 公共装配（react mock + locale 桩）见 test/client-harness.mjs。
+//
+// 收缩后的不变量：只注册 conversation.composer.dock、只读 contextPressure 一个投影
+// （I9/I10）。原来覆盖 TurnBadge 的用例随该组件一并删除——它测的是已移除的行为。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nodesOf, textOf, setupClientBase, assertDictPair } from "./client-harness.mjs";
+import { textOf, setupClientBase, assertDictPair } from "./client-harness.mjs";
 
 const NS = "dsh-plugins.tokprev";
 
@@ -11,138 +14,146 @@ function setup(opts) {
 	return {
 		...base,
 		line: base.componentOf("conversation.composer.dock"),
-		badge: base.componentOf("conversation.chat.assistant-actions"),
 		t: base.t(NS),
 	};
 }
 
-/** 预告行的三路数据源：投影（上下文压力）、会话（输出历史）、输入（草稿与排队）。 */
-function lineProps(t, { pressure, breakdown, draft = "", queue = [], nodes = [], turnEnds = new Set(), running = false }) {
+/**
+ * 预告行的三路数据源：投影（上下文压力）、会话（输出历史）、输入（草稿）。
+ * `useProjection` 已不支持 contextBreakdown —— 这里对任何非 contextPressure 的
+ * key 都返回 undefined，与收缩后的实现口径一致。
+ */
+function lineProps(t, { pressure, draft = "", nodes = [], turnEnds = new Set(), running = false } = {}) {
 	return {
 		t,
-		useProjection: (key) => (key === "contextPressure" ? pressure : breakdown),
+		useProjection: (key) => (key === "contextPressure" ? pressure : undefined),
 		useSession: (selector) => selector({ nodes, turnEnds, running }),
-		useInput: (selector) => selector({ draft, queue }),
+		useInput: (selector) => selector({ draft }),
 	};
 }
 
 const PRESSURE = { projectedTokens: 1000, contextWindow: 100000 };
-const BREAKDOWN = { systemTokens: 500, toolsTokens: 100, messageTokens: 200 };
 
-// ── 词典 ──────────────────────────────────────────────────────────────────
+// ── 注册形态 ───────────────────────────────────────────────────────────────
+
+test("I9：只注册 composer.dock，不再注册 assistant-actions", () => {
+	const { registrations } = setup();
+	const ids = registrations.map((r) => r.opts.id);
+	assert.ok(ids.includes("tok-preview"), "预告行仍在");
+	assert.ok(!ids.includes("tok-turn-badge"), "TurnBadge 已删除（I9）");
+	const names = registrations.map((r) => r.opts.name);
+	assert.ok(!names.includes("conversation.chat.assistant-actions"), "不得再注册 assistant-actions（I9）");
+});
+
+test("注册：composer.dock 声明 locale 命名空间（t 席位靠它注入）", () => {
+	const { registrations } = setup();
+	const slot = registrations.find((r) => r.opts.id === "tok-preview");
+	assert.ok(slot, "tok-preview 应已注册");
+	assert.equal(slot.opts.name, "conversation.composer.dock");
+	assert.equal(slot.opts.locale, NS, "应声明 locale 命名空间");
+});
+
+test("I10：组件只依赖 contextPressure 一个投影键", () => {
+	const { line, t } = setup();
+	const asked = [];
+	const props = lineProps(t, { pressure: PRESSURE });
+	props.useProjection = (key) => {
+		asked.push(key);
+		return key === "contextPressure" ? PRESSURE : undefined;
+	};
+	line(props);
+	assert.deepEqual(asked, ["contextPressure"], "只应询问 contextPressure，不再读 contextBreakdown/queue");
+});
 
 test("词典：zh/en 键集完全一致（缺键在界面上会显示裸键）", () => {
 	const { dicts } = setup();
 	assertDictPair(assert, NS, dicts);
 });
 
-test("注册：两个 slot 都声明 locale 命名空间（t 席位靠它注入）", () => {
-	const { registrations } = setup();
-	const slots = registrations.filter((r) => r.opts.id === "tok-preview" || r.opts.id === "tok-turn-badge");
-	assert.equal(slots.length, 2, "tokprev 注册两个 slot");
-	for (const r of slots) assert.equal(r.opts.locale, NS, `${r.opts.id} 应声明 locale 命名空间`);
+test("词典收缩到三点式所需的最小键集", () => {
+	const { dicts } = setup();
+	const keys = Object.keys(dicts[NS].zh).sort();
+	assert.deepEqual(keys, ["line.draft", "line.next", "line.output", "tip.anchored", "tip.estimated"]);
+	for (const gone of ["line.nextPct", "line.context", "line.queue", "badge.line", "badge.title", "badge.calls.one"]) {
+		assert.ok(!keys.includes(gone), `已删除的键 ${gone} 不应残留`);
+	}
 });
 
 // ── 预告行 ─────────────────────────────────────────────────────────────────
 
-test("预告行中文：锚定态显示下一轮输入与百分比，明细含上下文与草稿", () => {
+test("AC-10 中文：三点式 = 下一轮输入 · 草稿 · 输出预估", () => {
 	const { line, t } = setup();
 	const tree = line(lineProps(t, { pressure: PRESSURE, draft: "abcd" }));
 	const text = textOf(tree);
-	// 1000 + 草稿 9（ceil(4/4)+8） = 1009 → 1.0K；占 100K 窗口 1%
-	assert.match(text, /下一轮输入 ≈ 1\.0K \(1%\)/, "主段");
-	assert.match(text, /上下文 1\.0K/, "上下文段");
-	assert.match(text, /草稿 9/, "草稿段");
-	assert.match(text, /输出预估 -/, "无历史样本时的输出预估");
-	assert.equal(tree.props.title, "上下文基数：提供商锚定（上次真实请求 + 增量估算）");
+	// 1000 + 草稿 9（ceil(4/4)+8） = 1009 → 1.0K
+	assert.match(text, /下一轮输入 ≈ 1\.0K/, "第一段：下一轮输入");
+	assert.match(text, /草稿 9/, "第二段：草稿增量");
+	assert.match(text, /输出预估 -/, "第三段：输出预估（无历史样本）");
+	assert.equal(tree.props.title, "下一轮输入：锚定上次真实请求 + 草稿增量估算");
 });
 
-test("预告行英文：同场景走英文模板与英文语序", () => {
+test("AC-10 英文：同场景走英文模板与英文语序", () => {
 	const { line, t } = setup({ locale: "en" });
 	const text = textOf(line(lineProps(t, { pressure: PRESSURE, draft: "abcd" })));
-	assert.match(text, /Next input ≈ 1\.0K \(1%\)/);
-	assert.match(text, /Context 1\.0K/);
+	assert.match(text, /Next input ≈ 1\.0K/);
 	assert.match(text, /Draft 9/);
 	assert.match(text, /Est\. output -/);
 });
 
-test("预告行中文：未锚定态以 * 标记且无百分比（无真实请求锚点）", () => {
+test("三点式恰好三段，且以 · 分隔", () => {
 	const { line, t } = setup();
-	const tree = line(lineProps(t, { pressure: undefined, breakdown: BREAKDOWN }));
-	const text = textOf(tree);
-	// 500 + 100 + 200 = 800，无窗口故无百分比
-	assert.match(text, /^\*?下一轮输入 ≈ 800/);
-	assert.match(text, /\*上下文 800/, "未锚定的上下文段带 * 记号");
-	assert.equal(tree.props.title, "尚无真实请求锚点，纯启发式估算（含系统提示与工具表）");
+	const tree = line(lineProps(t, { pressure: PRESSURE, draft: "abcd" }));
+	assert.equal(tree.children.length, 3, "三段");
+	const spans = tree.children.map(textOf);
+	assert.equal(spans[0], "下一轮输入 ≈ 1.0K", "首段无前缀");
+	assert.ok(spans[1].startsWith("\u00b7 "), "第二段带 · 前缀");
+	assert.ok(spans[2].startsWith("\u00b7 "), "第三段带 · 前缀");
 });
 
-test("预告行英文：未锚定态", () => {
+test("未锚定态：以 * 标记（无真实请求锚点），草稿仍计入", () => {
+	const { line, t } = setup();
+	const tree = line(lineProps(t, { pressure: undefined, draft: "abcd" }));
+	const spans = tree.children.map(textOf);
+	assert.match(spans[0], /^\*下一轮输入 ≈ 9/, "无锚点时基数 0，只有草稿");
+	assert.match(spans[1], /草稿 9/);
+	assert.equal(tree.props.title, "尚无真实请求锚点：仅按启发式估算（不含系统提示与工具定义）");
+});
+
+test("未锚定态英文", () => {
 	const { line, t } = setup({ locale: "en" });
-	const text = textOf(line(lineProps(t, { pressure: undefined, breakdown: BREAKDOWN })));
-	assert.match(text, /\*Context 800/);
+	const text = textOf(line(lineProps(t, { pressure: undefined, draft: "abcd" })));
+	assert.match(text, /\*Next input ≈ 9/);
 });
 
-// ── 徽标 ──────────────────────────────────────────────────────────────────
-
-/** 构造 selectBadge 认可的会话快照：assistant 节点 + 已收尾的 turn 集合。 */
-function sessionOf(nodes, turns) {
-	return { nodes, turnEnds: new Set(turns) };
-}
-
-function badgeProps(t, session, messageId) {
-	return { t, useSession: (selector) => selector(session), messageId };
-}
-
-test("徽标中文：单次调用带缓存读（1 次调用 · 缓存 3.0K）", () => {
-	const { badge, t } = setup();
-	const session = sessionOf([
-		{ kind: "assistant", messageId: "m1", turn: 1, seq: 5, usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 3000 } },
-	], [1]);
-	const tree = badge(badgeProps(t, session, "m1"));
-	// 计费输入 = 1000 + 3000 = 4000 → 4.0K
-	assert.equal(textOf(tree), "本轮 输入 4.0K（1 次调用 · 缓存 3.0K） · 输出 100");
-	assert.equal(tree.props.title, "本轮实际消耗（提供商上报，1 次调用）：输入 4000 tok，输出 100 tok");
+test("pressureTokens 兜底（projectedTokens 缺席时用它）", () => {
+	const { line, t } = setup();
+	const text = textOf(line(lineProps(t, { pressure: { pressureTokens: 2000 }, draft: "" })));
+	assert.match(text, /下一轮输入 ≈ 2\.0K/);
 });
 
-test("徽标英文：单复数分形（1 call / 2 calls）", () => {
-	const { badge, t } = setup({ locale: "en" });
-	// 计费输入含缓存读：1000 + 3000 = 4000 → 4.0K
-	const one = sessionOf([
-		{ kind: "assistant", messageId: "m1", turn: 1, seq: 5, usage: { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 3000 } },
-	], [1]);
-	assert.equal(textOf(badge(badgeProps(t, one, "m1"))), "4.0K in (1 call · cache 3.0K) · 100 out");
+test("输出预估：单样本给 ≈ 值，多样本给 P25–P75 区间", () => {
+	const { line, t } = setup();
+	const one = textOf(line(lineProps(t, { pressure: PRESSURE, nodes: [
+		{ kind: "assistant", turn: 1, usage: { outputTokens: 500 } },
+	], turnEnds: new Set([1]) })));
+	assert.match(one, /输出预估 ≈500/);
 
-	// 同 turn 两次调用：seq 1 的早样本与 seq 5 的收尾消息合计
-	const two = sessionOf([
-		{ kind: "assistant", messageId: "m0", turn: 1, seq: 1, usage: { inputTokens: 1000, outputTokens: 100 } },
-		{ kind: "assistant", messageId: "m1", turn: 1, seq: 5, usage: { inputTokens: 500, outputTokens: 100 } },
-	], [1]);
-	const tree = badge(badgeProps(t, two, "m1"));
-	assert.equal(textOf(tree), "1.5K in (2 calls) · 200 out");
-	assert.equal(tree.props.title, "Actual usage this turn (provider-reported, 2 calls): 1500 tok in, 200 tok out");
+	const many = textOf(line(lineProps(t, { pressure: PRESSURE, nodes: [
+		{ kind: "assistant", turn: 1, usage: { outputTokens: 100 } },
+		{ kind: "assistant", turn: 2, usage: { outputTokens: 200 } },
+		{ kind: "assistant", turn: 3, usage: { outputTokens: 300 } },
+		{ kind: "assistant", turn: 4, usage: { outputTokens: 400 } },
+		{ kind: "assistant", turn: 5, usage: { outputTokens: 500 } },
+	], turnEnds: new Set([1, 2, 3, 4, 5]) })));
+	assert.match(many, /输出预估 200\u2013400/, "P25=200 P75=400");
 });
 
-test("徽标中文：两次调用（复数同形）", () => {
-	const { badge, t } = setup();
-	const session = sessionOf([
-		{ kind: "assistant", messageId: "m0", turn: 1, seq: 1, usage: { inputTokens: 1000, outputTokens: 100 } },
-		{ kind: "assistant", messageId: "m1", turn: 1, seq: 5, usage: { inputTokens: 500, outputTokens: 100 } },
-	], [1]);
-	assert.equal(textOf(badge(badgeProps(t, session, "m1"))), "本轮 输入 1.5K（2 次调用） · 输出 200");
+test("运行中不渲染（正在生成时预告无意义）", () => {
+	const { line, t } = setup();
+	assert.equal(line(lineProps(t, { pressure: PRESSURE, running: true })), null);
 });
 
-test("徽标：非收尾消息不渲染（同一 turn 内只落在最后一条上）", () => {
-	const { badge, t } = setup();
-	const session = sessionOf([
-		{ kind: "assistant", messageId: "m0", turn: 1, seq: 1, usage: { inputTokens: 1000, outputTokens: 100 } },
-		{ kind: "assistant", messageId: "m1", turn: 1, seq: 5, usage: { inputTokens: 500, outputTokens: 100 } },
-	], [1]);
-	assert.equal(badge(badgeProps(t, session, "m0")), null);
-});
-
-test("徽标中文：缺少 usage 时不渲染（不抛错）", () => {
-	const { badge, t } = setup();
-	const session = sessionOf([{ kind: "assistant", messageId: "m1", turn: 1, seq: 5 }], [1]);
-	assert.equal(badge(badgeProps(t, session, "m1")), null);
-	assert.ok(nodesOf({ type: "div", children: [] }).length >= 0, "不渲染即无节点");
+test("降级：pressure 缺席时按未锚定处理，不抛错（I8）", () => {
+	const { line, t } = setup();
+	assert.doesNotThrow(() => line(lineProps(t, { pressure: undefined })));
 });
