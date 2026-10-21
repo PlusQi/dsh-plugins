@@ -129,21 +129,32 @@ scope 可省略：跨多模块或纯性质类提交（如 `docs: 修正错别字
 
 **优先级**：命令行 > `.gitignore` > `.git/info/exclude` > `core.excludesFile`。三者同时命中时以 `.gitignore` 为准，所以同一模式不要在两处重复写——重复会让「改哪份才生效」变成猜谜。
 
-**分层实例**（`.gitignore` 里不出现个人偏好，`.git/info/exclude` 里不出现项目约定）：
+**`.gitignore` 里放什么**（这一节只定项目公共规则；具体某人放进去的个人条目属于本机事务，不在此登记）：
 
-| 类别 | 归属 | 理由 |
+| 类别 | 例子 | 理由 |
 | --- | --- | --- |
-| `node_modules/`、`*.tgz`、`*.log`、`*.pid` | `.gitignore` | 任何 clone 都会产生，与是谁无关 |
-| `.DS_Store`、`Thumbs.db` | `.gitignore` | 按操作系统判定的元数据，换机器仍应忽略 |
-| `.env` / `.env.*` | `.gitignore` | 凭据边界。本包当前不读 `.env`，保留此条是防日后接入时把密钥提交进历史 |
-| `docs/specs/`、`docs/debug/`、工程方法指南 | `.gitignore` | 依据「优先级」表：本地证据不随仓库分发。这是**项目决策**，不是个人偏好——任何维护者都该同样忽略 |
-| `.workbuddy/` | `.git/info/exclude` | 本机 Agent 工作区（记忆 / 调试脚本 / 截图），零 tracked 文档引用，换人不该继承 |
-| `TRAE-MAX-CONTEXT-BUG.md` | `.git/info/exclude` | 一次性排查报告，属证据记录而非仓库内容 |
-| `.vscode/`、`.idea/`、`*.code-workspace`、`*.swp`、`*~` | `.git/info/exclude` | 用哪个编辑器是个人选择，不构成项目约定。需要共享工作区设置时，改为在 `.gitignore` 里精确放行单个文件，而不是整目录 |
+| 依赖与打包产物 | `node_modules/`、`*.tgz` | 任何 clone 都会产生，与是谁无关 |
+| 运行时噪声 | `*.log`、`*.pid` | 同上 |
+| 操作系统元数据 | `.DS_Store`、`Thumbs.db` | 按操作系统判定，换机器仍应忽略 |
+| 本地凭据 | `.env`、`.env.*` | 凭据边界。本包当前不读 `.env`，保留此条是防日后接入时把密钥提交进历史 |
+| 本地留存文档 | `docs/specs/`、`docs/debug/`、工程方法指南 | 依据「优先级」表：本地证据不随仓库分发。这是**项目决策**，任何维护者都该同样忽略 |
 
-**跨仓库通用的个人规则**（如 `**/.claude/settings.local.json`）应放 `core.excludesFile`（本机 `~/.config/git/ignore`），而非每个仓库的 `info/exclude` 各写一遍——后者 clone 即丢，会重复劳动。
+**`.git/info/exclude` 里放什么**：本机工作区目录、一次性排查报告、编辑器个人配置（`.vscode/` / `.idea/` / `*.swp` 等）。这类条目的共同点是**换人不该继承**，写进 `.gitignore` 等于把自己的习惯强加给下一个人。
+
+**跨仓库通用的个人规则**（如 `**/.claude/settings.local.json`）应放 `core.excludesFile`（通常是 `~/.config/git/ignore`），而非每个仓库的 `info/exclude` 各写一遍——后者 clone 即丢，会重复劳动。
 
 新增忽略条目前先问：这条在别人的机器上成立吗？不成立就放 `info/exclude`。**不要把 `.git/info/exclude` 当成「暂时放一下」的地方**——它不进历史、不进评审，写进去的规则只有本机知道。
+
+## 本机叠加层（`AGENTS.local.md`）
+
+宿主 `@deepseek-ai/dsh-agent-instructions` 支持 `AGENTS.local.md` / `CLAUDE.local.md` 作为**叠加层**（`localInstructionFileCandidates`，排在项目 `AGENTS.md` 之后注入）。本仓库用它承载**只对本机成立**的约束：
+
+| 该生效 | 放 |
+| --- | --- |
+| 换人也该生效 | 本文件（`AGENTS.md`），随仓库分发 |
+| 只对本机成立 | `AGENTS.local.md`，由 `.gitignore` 忽略，不进包 |
+
+判定标准与「忽略规则分层」同一条。`AGENTS.local.md` 里放的是本机路径与端口、比项目要求更严的目检惯例、个人工作偏好；**不得**承载项目公共事实——否则新 clone 拿不到该文件，项目会静默失去这条规则。某条被证明「换人也该生效」时，上移进本文件并从 `AGENTS.local.md` 删除。
 
 ## 分支命名规范
 

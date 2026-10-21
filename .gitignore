@@ -33,3 +33,11 @@ Thumbs.db
 docs/specs/
 docs/debug/
 docs/project-engineering-guardrails-guide.zh-CN.md
+
+# ── 本机叠加约束 ──
+# 宿主 dsh-agent-instructions 支持 AGENTS.local.md / CLAUDE.local.md 作为叠加层
+# （排在项目 AGENTS.md 之后注入）。本文件承载只对本机成立的约束：本机路径与端口、
+# 更严的目检惯例、个人工作偏好。与 docs/specs 同理——它一旦入库，就把某个人的
+# 机器事实强加给所有 clone。区分标准见 AGENTS.md「本机叠加层」。
+AGENTS.local.md
+CLAUDE.local.md
