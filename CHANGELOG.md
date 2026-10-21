@@ -2,7 +2,17 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
 
-## [0.7.0] - 2026-10-21
+## [Unreleased]
+
+> **状态**：尚未打 tag。按本仓库约定（见 `docs/MAINTAINING.md`「发布到 GitHub」），未发布内容挂在 `[Unreleased]` 段下，打 tag 时再把段头改成 `## [X.Y.Z] - 日期`。`package.json` 当前为 `0.7.1`，但 `v0.7.0` / `v0.7.1` **均未打 tag**，因此 `#v0.7.x` 固定安装暂不可用。
+
+### Fixed
+
+- **面板 8 处「输入」口径不统一（真实缺陷，v0.3.0 起存在）**：其中 6 处只显示**未缓存输入**（`in`），漏掉缓存读（`cr`）与缓存写（`cw`），而同一个面板的指标卡与上下文桶分布早已用 `in + cr + cw`——同一面板自相矛盾。实测数据里缓存部分占输入的 97–99%，按路由的排行偏差最高达 130 倍（workbuddy/deepseek-v4.1-flash：显示 2.6M，实际 340.1M）。现在 KPI / 周趋势 / 日柱 tooltip / 工作区排行 / 模型排行统一走 `tokstatsBilled()`（`in + cr + cw`）。
+- **每日柱聚合漏累加 `cr` / `cw`（独立缺陷）**：`tokstatsDailyColumns` 只累加 `calls` / `in` / `out`，即使显示侧改用 billed，日柱 tooltip 仍会退回未缓存口径。host 侧的 `daily` 行本就带四桶，只改客户端。
+- **KPI 卡标签「计费输入」改为「输入」，hint 改为「未缓存 / 缓存读」**：面板不再有两个不同口径的「输入」；hint 标注的是拆分里的未缓存部分（`未缓存 {uncached} · 缓存读 {cached}` / `{uncached} uncached · {cached} cache read`）。
+
+> **升级提示（输入口径）**：面板排行 / 周趋势 / 悬停提示里的「输入」数字会变大——那是修正而非回归。这一项是**纯展示层**改动：不抬 `stateVersion`、不需要清缓存，旧缓存行照常读取。
 
 > **破坏性变更**（五项，均可回滚）：
 > 1. **tokstats 投影单元 key 改名**：`tokstats` → `dsh-plugins.tokstats`（带包前缀，消除与宿主日后同名单元的撞车风险）。旧 key 的缓存记录不再被读取、永久残留，按每会话数百字节计；确认无误后可由维护者手工清理 `storages/session_projcache/sessions/*.json` 中的对应字段。
@@ -14,7 +24,7 @@
 ### Changed
 
 - **tokstats 面板重做信息层级**：原来是一列「标签 …… 数值」的纯文本，数据一多就退化成难扫读的清单。现在分四层：
-  - **四张指标卡**：调用次数（附窗口内日均）、计费输入（附输入 / 缓存读拆分）、输出（附缓存写）、缓存命中率；
+  - **四张指标卡**：调用次数（附窗口内日均）、输入（附未缓存 / 缓存读拆分）、输出（附缓存写）、缓存命中率；
   - **每日调用量柱状图**（整行）：按窗口跨度自动逐日或合并成列，柱高用平方根刻度（实测日量差异可达百倍，线性刻度下除峰值外全压成细线）；峰值标在卡片右上角，精确数字在 tooltip；
   - **上下文长度分布改为占比条**：每行 = 标签 + 占比条 + 次数，四桶明细下移到第二行——原来长数值把条形挤成两段，条长不可比；
   - **工作区排行**：按调用次数排序带占比条，标签取路径末两段（完整路径在 tooltip）；
@@ -174,7 +184,12 @@
 - 双语 README（中文默认 + English）及效果示意图。
 - 设计决策记录 SPEC-tokprev.md（本地留存，不随仓库分发）。
 
-[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/PlusQi/dsh-plugins/compare/v0.5.2...v0.6.0
+[0.5.2]: https://github.com/PlusQi/dsh-plugins/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/PlusQi/dsh-plugins/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/PlusQi/dsh-plugins/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/PlusQi/dsh-plugins/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/PlusQi/dsh-plugins/compare/v0.2.2...v0.2.3
