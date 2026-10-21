@@ -11,7 +11,7 @@ All plugins live in a single pack (one repo = one profile bundle): install once 
 | Plugin      | Function                                                                                          |
 | ----------- | ------------------------------------------------------------------------------------------------- |
 | **tokprev** | Three-part preview below the Composer: next input · draft · est. output (only the draft increment the official ContextMeter cannot show) |
-| **tokstats** | "Token analytics" full panel in the sidebar: metric cards + daily calls + context-length distribution + weekly trend + workspace ranking + promptopt usage, with 90-day / 30-day / all-time windows |
+| **tokstats** | "Token analytics" full panel in the sidebar: metric cards + daily calls + context-length distribution + weekly trend + model ranking + workspace ranking + promptopt usage, with 90-day / 30-day / all-time windows |
 | **promptopt** | Star-icon button in the composer's tool row (hover for the tooltip): restructure the draft faithfully into structured input, compare original vs. restructured, and **adopt** it into the input only if you like it |
 
 > **tokprev** is a pure interface plugin; **tokstats** and **promptopt** also ship a host-side half (one registers a session projection unit and aggregates, the other makes a single side-channel model call).
@@ -47,18 +47,21 @@ Cross-session token statistics: the host folds tokens within one session only; t
 
 ![tokstats panel](./docs/assets/tokstats-en.png)
 
-"Token analytics" in the sidebar list opens a **full panel**, layered top to bottom:
+"Token analytics" in the sidebar list opens a **full panel**, in four bands top to bottom (the daily chart and each pair of side-by-side cards take one band):
 
 - **Metric cards** (four): calls (with the per-day rate for the window), billed input (split into input / cache read), output (with cache write), and cache-hit rate — scale and cache quality at a glance;
 - **Daily calls** (a full-width bar chart): it decides per window whether to draw each day or merge days into columns (per-day within 60 days), and bar height uses a square-root scale — real daily volumes differ by up to 100×, and on a linear scale everything but the peak collapses into a hairline; the peak date and count sit in the card's top-right corner and exact numbers are in the hover tooltips;
 - **Context length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)`; each row is label + share bar + call count, with the four-bucket detail (input / output / hit rate) on a second line, and the peak bucket in the card corner;
 - **Trend (weekly)**: calls / input / output as four columns grouped by natural week (Monday-based); weekly totals always add up to the grand total (the weekly view is folded from the daily series — a single source of truth, so the two can never drift apart);
+- **Models**: a usage-share ranking by `provider/model` pair, sitting next to the workspace card. Each row is label + share bar + call count + `input · output · hit rate`; the same model under two providers takes two rows (that is the composite-key definition, not duplication); samples with no route land in an **Unattributed** row placed last, so the rows always add up to the grand total. **No cost accounting**: no amounts, no price table, no "no price configured";
 - **Workspaces**: ranked by call count with share bars, labelled by the last two path segments (the full path is in the tooltip); a picker switches to a single workspace (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted);
 - **Prompt restructure usage**: promptopt's started / adopted / dismissed counts, adoption rate, and the character delta on adoption (the card is hidden when promptopt is not enabled).
 
 Narrow windows (main area under 900px) collapse to a single column; the refresh button in the top-right corner re-fetches even when the window and workspace are unchanged.
 
 Same accounting as the host: billed input = `inputTokens + cacheReadTokens + cacheWriteTokens`; the final `assistant/message.usage` of a `(turn, step)` replaces its usage-chunk sample (no double counting).
+
+Route accounting: the ranking key comes from `assistant/message`'s `message.source.{provider,model}`, the same field the host's token metering settles on. It deliberately **does not read the request-side configuration snapshot** — that records who the request *intended* to use, while this records who actually *billed*, and mixing the two makes the numbers impossible to reconcile. The price is that the rare step with only streaming usage and no final message (0.18% measured) has no route and lands in "Unattributed"; those steps still count as calls, and they are the only gap between the ranking's row sum and the grand total.
 
 Three time windows — last 90 days, last 30 days, all time. Data is fetched when the panel opens, when you change the window or workspace, and when you hit refresh; there is no resident push, because this panel does not need to tick.
 

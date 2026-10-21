@@ -30,6 +30,7 @@ import {
 	TOKSTATS_BUCKET_COUNT,
 	TOKSTATS_CHANNEL,
 	TOKSTATS_ENDPOINT,
+	tokstatsRouteOf,
 } from "../lib/index.js";
 
 // ── fixture ────────────────────────────────────────────────────────────────
@@ -50,6 +51,15 @@ function chunkEvent(seq, time, turn, step, usage) {
 /** assistant/message 事件（可带 usage 终值）。 */
 function messageEvent(seq, time, turn, step, usage) {
 	return { type: "assistant/message", seq, time, data: { turn, step, ...(usage === undefined ? {} : { usage }) } };
+}
+
+/** 带路由的 assistant/message 事件：`source` 是 p8-a 实测的唯一位置（data.message.source）。 */
+function routedMessageEvent(seq, time, turn, step, usage, route) {
+	const event = messageEvent(seq, time, turn, step, usage);
+	if (route !== undefined) {
+		event.data.message = { source: { kind: "model", provider: route.provider, model: route.model } };
+	}
+	return event;
 }
 
 /** 把一串事件折进新状态（模拟注册表的驱动方式：逐事件 apply）。 */
@@ -178,9 +188,12 @@ test("I7 / AC-5：E1 折叠不删原始明细，且汇总数字与折叠前一�
 	const rowsBefore = state.rows.length;
 	const epoch = tokstatsEpochFold(state, "2026-10-20", 30);
 	assert.equal(epoch.rows.length, rowsBefore, "折叠不得删改原始明细（I7）");
+	// epoch 保留「路由 × 桶」两维（A-5 / tks8-3a）：无 source 的样本归单一路由 ""。
+	assert.equal(epoch.epoch.routes.length, 1, "同一条路由只建一组");
+	assert.equal(epoch.epoch.routes[0].rt, "", "无 source 的样本归未标注路由");
 	// 计费输入 4000 < 4096 → 桶 0
-	assert.equal(epoch.epoch.buckets[0].calls, 2, "窗口外的两格都折进 epoch 的桶 0");
-	assert.equal(epoch.epoch.buckets[0].out, 18);
+	assert.equal(epoch.epoch.routes[0].buckets[0].calls, 2, "窗口外的两格都折进 epoch 的桶 0");
+	assert.equal(epoch.epoch.routes[0].buckets[0].out, 18);
 
 	const before = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary: tokstatsSummaryOf(state) }], { windowDays: 0, today: "2026-10-20" });
 	const after = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary: tokstatsSummaryOf({ ...state, epoch: epoch.epoch, w: state.w, rows: state.rows }) }], { windowDays: 0, today: "2026-10-20" });
@@ -282,14 +295,20 @@ test("聚合：epoch 合计计入日序列（折叠前的历史仍能在柱状�
 		e: {
 			start: "2026-01-01",
 			end: "2026-09-21",
-			buckets: [
-				{ calls: 2, in: 5000, cr: 0, cw: 0, out: 20 },
-				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
-				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
-				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
-				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
-				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
-				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+			// epoch 新结构：按路由分组，内层沿用字段名 buckets（tks8-3a）。
+			routes: [
+				{
+					rt: "",
+					buckets: [
+						{ calls: 2, in: 5000, cr: 0, cw: 0, out: 20 },
+						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+					],
+				},
 			],
 		},
 		rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 1 }],
@@ -355,21 +374,25 @@ test("根工作区：沿 parentSession 链上溯到顶层 cwd；链断归 _orpha
 	assert.equal(tokstatsRootWorkspaceOf({ id: "root", cwd: W_BETA }, headers), W_BETA);
 });
 
-test("I1：wire.view 键集只有 w / e / rows，不含 provider / model / 价格字段", () => {
+test("I1 / AC-8：wire.view 键集只有 w / e / rows；cell 带不透明 rt 串", () => {
 	const def = tokstatsDefinition(90);
 	const state = fold([messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 5 })]);
 	const view = def.wire.view(state);
 	assert.deepEqual(Object.keys(view).sort(), ["e", "rows", "w"]);
 	for (const cell of view.rows) {
-		assert.deepEqual(Object.keys(cell).sort(), ["b", "calls", "cr", "cw", "d", "in", "out"], "cell 不得含 provider/model");
+		// rt 是三维 cell 的第三段（tks8-2a）；wire 摘要形状本身不变（I2）。
+		assert.deepEqual(Object.keys(cell).sort(), ["b", "calls", "cr", "cw", "d", "in", "out", "rt"], "cell 键集含 rt，且无 provider/model 字段");
+		assert.equal(typeof cell.rt, "string", "rt 必须是字符串（空串表示未标注）");
 	}
 });
 
-test("单元定义：key / stateVersion 2 / init / apply / wire 齐备", () => {
+test("单元定义：key / stateVersion / init / apply / wire 齐备", () => {
 	const def = tokstatsDefinition(90);
 	assert.equal(def.key, TOKSTATS_KEY);
 	assert.equal(def.stateVersion, TOKSTATS_STATE_VERSION);
-	assert.equal(TOKSTATS_STATE_VERSION, 2, "由 1 提升，旧缓存行据此作废（P5）");
+	// AC-7 / I4：key 带包前缀，消除与宿主同名单元的撞车（Q5）。
+	assert.equal(TOKSTATS_KEY, "dsh-plugins.tokstats", "投影 key 必须是带包前缀的全名（I4）");
+	assert.equal(TOKSTATS_STATE_VERSION, 3, "由 2 提升（cell 加 rt + epoch 改结构），旧缓存行据此作废（I3 / Q9）");
 	assert.equal(typeof def.init, "function");
 	assert.equal(typeof def.apply, "function");
 	assert.ok(def.wire !== undefined, "必须带 wire（host-only 单元读不回来）");
@@ -397,13 +420,268 @@ test("apply 用 state.seed 做 fork 去重（apply 只收 state/event，拿不�
 	assert.equal(state.rows.length, 1);
 });
 
-test("I1：摘要只认 w / e / rows 三键（provider/model 字段一律不带出）", () => {
+test("I1：摘要只认 w / e / rows 三键（面外字段一律不带出；rt 是被保留的维度）", () => {
 	const summary = tokstatsSummaryOf({ w: "a", e: null, rows: [{ d: D1, b: 0, calls: 1, in: 1, cr: 0, cw: 0, out: 1, p: "x", m: "y" }] });
 	assert.deepEqual(Object.keys(summary).sort(), ["e", "rows", "w"]);
 	assert.equal(tokstatsSummaryOf(undefined), undefined);
 	assert.equal(tokstatsSummaryOf({ rows: "nope" }), undefined);
 	assert.equal(tokstatsSummaryOf(null), undefined);
 });
+
+// ── 阶段 1b：路由维度（第一批：cell 三维 + epoch 保路由） ────────────────────
+test("tks8-1c：tokstatsRouteOf 只认字符串 provider/model，其余归一为空串（I10）", () => {
+	assert.equal(tokstatsRouteOf({ provider: "a", model: "b" }), "a/b");
+	assert.equal(tokstatsRouteOf({ provider: "deepseek-official", model: "deepseek-v4-flash-vision-exp" }), "deepseek-official/deepseek-v4-flash-vision-exp");
+	// 空串是「未标注」的唯一表示（不引入 null：JSON 往返与 Map 键都要额外分支）
+	assert.equal(tokstatsRouteOf(undefined), "");
+	assert.equal(tokstatsRouteOf(null), "");
+	assert.equal(tokstatsRouteOf("a/b"), "", "非对象一律归未标注");
+	assert.equal(tokstatsRouteOf({}), "");
+	assert.equal(tokstatsRouteOf({ provider: "a" }), "", "缺 model 不放行");
+	assert.equal(tokstatsRouteOf({ model: "b" }), "", "缺 provider 不放行");
+	assert.equal(tokstatsRouteOf({ provider: 1, model: "b" }), "", "provider 非字符串不放行");
+	assert.equal(tokstatsRouteOf({ provider: "a", model: null }), "", "model 非字符串不放行");
+	// source 的键形状有 replayState 变体（p8-a：2518/2562 带它），不影响取值
+	assert.equal(tokstatsRouteOf({ kind: "model", provider: "a", model: "b", replayState: "x" }), "a/b");
+});
+
+test("AC-1 / tks8-4b：带 source 的 message → cell 的 rt 为 provider/model", () => {
+	const state = fold([
+		routedMessageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 5 }, { provider: "a", model: "b" }),
+	]);
+	assert.equal(state.rows.length, 1);
+	assert.equal(state.rows[0].rt, "a/b", "路由归因正确（AC-1）");
+	assert.equal(state.rows[0].calls, 1);
+});
+
+test("AC-2 / tks8-4c：只由 chunk 采样形成的 step → rt 为空串且仍计入 calls", () => {
+	// 不要用「message 缺 source」构造：p8-a 实测该形态不存在（2562/2562 全有 source）。
+	// rt === "" 的唯一现实来源是「chunk 采样未被同 step 的 message 终值替换」。
+	const state = fold([
+		chunkEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 50 }),
+	]);
+	assert.equal(state.rows.length, 1);
+	assert.equal(state.rows[0].rt, "", "无路由来源 → 未标注（AC-2）");
+	assert.equal(state.rows[0].calls, 1, "未标注样本仍计入调用次数（I9 的差额出口）");
+	assert.equal(state.rows[0].out, 50);
+});
+
+test("AC-3 / R3 / tks8-4d：跨 rt 终值替换不残留空格（chunk \"\" → message 真路由）", () => {
+	const state = fold([
+		chunkEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 50 }),
+		routedMessageEvent(1, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 60 }, { provider: "a", model: "b" }),
+	]);
+	assert.equal(state.rows.length, 1, "只剩一行：未标注那格必须被整条剔除（R3）");
+	assert.equal(state.rows[0].rt, "a/b", "终值带真路由");
+	assert.equal(state.rows[0].calls, 1, "不得双计");
+	assert.equal(state.rows[0].out, 60, "out 取终值");
+});
+
+test("AC-5 / I8 / tks8-4e：epoch 折叠保住路由粒度（逐路由合计与折叠前相等）", () => {
+	// 两条路由各一格，都早于 30 天窗口（today=2026-10-20 → windowStart=2026-09-21）。
+	const state = fold([
+		routedMessageEvent(0, T(1, 10, 0), 1, 1, { inputTokens: 4000, outputTokens: 7 }, { provider: "a", model: "b" }),
+		routedMessageEvent(1, T(20, 10, 0), 1, 2, { inputTokens: 4000, outputTokens: 11 }, { provider: "c", model: "d" }),
+	]);
+	const rowsBefore = state.rows.length;
+	const byRouteBefore = new Map();
+	for (const cell of state.rows) {
+		const acc = byRouteBefore.get(cell.rt) ?? { calls: 0, in: 0, cr: 0, cw: 0, out: 0 };
+		acc.calls += cell.calls;
+		acc.in += cell.in;
+		acc.cr += cell.cr;
+		acc.cw += cell.cw;
+		acc.out += cell.out;
+		byRouteBefore.set(cell.rt, acc);
+	}
+
+	const epoch = tokstatsEpochFold(state, "2026-10-20", 30);
+	assert.equal(epoch.rows.length, rowsBefore, "折叠不得删改原始明细（I7）");
+	assert.equal(epoch.epoch.routes.length, 2, "两条路由各建一组（R4：不能塌成一组）");
+	const byRouteAfter = new Map();
+	for (const group of epoch.epoch.routes) {
+		const acc = { calls: 0, in: 0, cr: 0, cw: 0, out: 0 };
+		for (const bucket of group.buckets) {
+			acc.calls += bucket.calls;
+			acc.in += bucket.in;
+			acc.cr += bucket.cr;
+			acc.cw += bucket.cw;
+			acc.out += bucket.out;
+		}
+		byRouteAfter.set(group.rt, acc);
+	}
+	assert.deepEqual([...byRouteAfter.keys()].sort(), [...byRouteBefore.keys()].sort(), "路由集合不变");
+	for (const [rt, before] of byRouteBefore) {
+		assert.deepEqual(byRouteAfter.get(rt), before, `路由 ${rt} 的合计必须与折叠前逐项相等（AC-5 / I8）`);
+	}
+});
+
+test("tks8-3c：读到旧结构 epoch（无 routes 但有 buckets）时视为单一路由 \"\"", () => {
+	const buckets = [];
+	for (let i = 0; i < TOKSTATS_BUCKET_COUNT; i += 1) buckets.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
+	buckets[0] = { calls: 2, in: 5000, cr: 0, cw: 0, out: 20 };
+	const summary = tokstatsSummaryOf({
+		w: W_ALPHA,
+		e: { start: "2026-01-01", end: "2026-09-21", buckets },
+		rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 1 }],
+	});
+	assert.doesNotThrow(() => tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" }));
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" });
+	assert.equal(result.totals.calls, 3, "旧结构 epoch 的合计仍要计入（不静默丢值）");
+});
+
+test("tks8-3d：摘要里 rt 非字符串时归一为空串，且不丢 cell（I10）", () => {
+	const summary = tokstatsSummaryOf({
+		w: "a",
+		e: null,
+		rows: [
+			{ d: D1, b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1, rt: 12345 },
+			{ d: D1, b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 },
+			{ d: D1, b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1, rt: "a/b" },
+		],
+	});
+	assert.equal(summary.rows.length, 3, "丢 cell 会让 calls 凭空减少（比归到未标注更糟）");
+	assert.deepEqual(summary.rows.map((c) => c.rt), ["", "", "a/b"]);
+});
+
+test("tks8-3c：epoch 形状不完整（缺 end / 非对象）时聚合不抛错（I10）", () => {
+	const rows = [{ d: "2026-10-20", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 1 }];
+	for (const e of [undefined, {}, { start: "2026-01-01" }, { end: 123 }, "nope"]) {
+		const summary = tokstatsSummaryOf({ w: W_ALPHA, e, rows });
+		assert.doesNotThrow(
+			() => tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" }),
+			`epoch 为 ${JSON.stringify(e)} 时不得抛错`,
+		);
+		const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" });
+		assert.equal(result.totals.calls, 1, "损坏的 epoch 只影响 epoch 合计，明细照常计入");
+	}
+});
+
+test("AC-6 / I3：ver: 2 的旧缓存行被跳过，冷折叠重建成功且不抛错", async () => {
+	// 宿主 viewCheckpoint 按 row.ver !== def.stateVersion 丢弃（C5），故旧行读回时
+	// 已不存在；这里按同一语义模拟「缓存里只有旧版本行」。
+	const connection = makeConnection();
+	const cache = {
+		calls: { cachedSnapshot: 0, coldSnapshot: 0 },
+		cachedSnapshot() {
+			cache.calls.cachedSnapshot += 1;
+			return undefined; // 旧版本行被宿主丢弃 → 缓存未命中
+		},
+		coldSnapshot(meta, inheritedEventCount, events) {
+			cache.calls.coldSnapshot += 1;
+			let state = tokstatsInit(meta, inheritedEventCount);
+			for (const event of events) state = tokstatsFoldUsage(state, event, 90);
+			return { asOfSeq: -1, values: { [TOKSTATS_KEY]: tokstatsDefinition(90).wire.view(state) } };
+		},
+	};
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	let result;
+	await assert.doesNotReject(async () => {
+		result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	});
+	assert.equal(result.ok, true, "旧版本行作废后不得抛错（AC-6）");
+	assert.equal(cache.calls.coldSnapshot, 1, "必须走冷折叠重建");
+	assert.equal(result.value.totals.calls, 2, "重建后的数字与真实日志一致");
+	// 第二批起 routes 由聚合产出；旧行作废重建后它必须同样可用（不复用旧形状）。
+	assert.deepEqual(result.value.routes.map((r) => r.rt), [""], "重建后的排行里只有未标注一行");
+	assert.equal(result.value.routes[0].calls, 2);
+});
+
+test("聚合字段集：第二批起包含 routes（第一批的「无 routes」绊线在此解除）", () => {
+	const summary = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 1, rt: "a/b" }] };
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-20" });
+	assert.deepEqual(
+		Object.keys(result).sort(),
+		["buckets", "daily", "routes", "totals", "weekly", "windowStart", "workspaces"],
+		"第二批的聚合字段集 = 第一批 + routes（且没有第二个新字段）",
+	);
+	assert.deepEqual(result.routes.map((r) => r.rt), ["a/b"]);
+});
+
+// ── 阶段 1c：按路由的排行（第二批：5a…5e / AC-9…AC-11） ────────────────────
+
+test("AC-11 / tka8-5b：同一 rt 出现在两个会话时累加，不是后者覆盖前者", () => {
+	// 回归形状与 v0.7.0 的 workspaces 覆盖缺陷完全同款：同 key 的 Map.set() 会让
+	// 后一个会话整段覆盖前一个，表现是「排行各行次数远小于总计」。
+	const one = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 100, cr: 10, cw: 1, out: 10, rt: "a/b" }] };
+	const two = { w: W_BETA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 3, in: 200, cr: 20, cw: 2, out: 20, rt: "a/b" }] };
+	const result = tokstatsAggregate([
+		{ rootWorkspace: W_ALPHA, summary: one },
+		{ rootWorkspace: W_BETA, summary: two },
+	], { windowDays: 90, today: "2026-10-20" });
+	assert.equal(result.routes.length, 1, "同一 rt 只出一行");
+	assert.equal(result.routes[0].calls, 5, "2 + 3");
+	assert.equal(result.routes[0].in, 300);
+	assert.equal(result.routes[0].cr, 30);
+	assert.equal(result.routes[0].cw, 3);
+	assert.equal(result.routes[0].out, 30);
+});
+
+test("AC-9 / I9：排行各行次数之和恒等于总计（未标注兜住差额）", () => {
+	const mixed = {
+		w: W_ALPHA,
+		e: null,
+		rows: [
+			{ d: "2026-10-20", b: 0, calls: 2, in: 100, cr: 0, cw: 0, out: 10, rt: "a/b" },
+			{ d: "2026-10-20", b: 1, calls: 3, in: 100, cr: 0, cw: 0, out: 20, rt: "c/d" },
+			{ d: "2026-10-20", b: 2, calls: 4, in: 100, cr: 0, cw: 0, out: 30, rt: "" },
+		],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary: mixed }], { windowDays: 90, today: "2026-10-20" });
+	const sum = result.routes.reduce((acc, entry) => acc + entry.calls, 0);
+	assert.equal(sum, result.totals.calls, "排行之和 = 总计（R5：差额必须有出口）");
+	assert.equal(sum, 9);
+});
+
+test("AC-10 / tka8-5d：calls 降序；未标注显式排最后；同次数按 rt 字典序", () => {
+	const summary = {
+		w: W_ALPHA,
+		e: null,
+		rows: [
+			{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1, rt: "" },
+			{ d: "2026-10-20", b: 0, calls: 5, in: 10, cr: 0, cw: 0, out: 1, rt: "z/z" },
+			{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1, rt: "b/b" },
+			{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1, rt: "a/a" },
+		],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-20" });
+	assert.deepEqual(result.routes.map((r) => r.rt), ["z/z", "a/a", "b/b", ""],
+		"calls 降序 → 同次数按 rt 字典序 → 空串显式排最后（空串在字典序里本是最前）");
+});
+
+test("AC-5 读取侧 / tka8-5c：epoch 的路由合计计入排行（折叠后不少行）", () => {
+	const bucketsRouteA = [];
+	const bucketsRouteB = [];
+	for (let i = 0; i < TOKSTATS_BUCKET_COUNT; i += 1) {
+		bucketsRouteA.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
+		bucketsRouteB.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
+	}
+	bucketsRouteA[0] = { calls: 2, in: 5000, cr: 0, cw: 0, out: 20 };
+	bucketsRouteB[1] = { calls: 1, in: 9000, cr: 0, cw: 0, out: 5 };
+	const summary = tokstatsSummaryOf({
+		w: W_ALPHA,
+		e: {
+			start: "2026-01-01",
+			end: "2026-09-21",
+			routes: [{ rt: "a/b", buckets: bucketsRouteA }, { rt: "c/d", buckets: bucketsRouteB }],
+		},
+		rows: [{ d: "2026-10-20", b: 0, calls: 3, in: 100, cr: 0, cw: 0, out: 1, rt: "a/b" }],
+	});
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" });
+	const byRoute = new Map(result.routes.map((r) => [r.rt, r.calls]));
+	assert.equal(byRoute.get("a/b"), 5, "epoch 的 2 次 + 窗口内明细的 3 次");
+	assert.equal(byRoute.get("c/d"), 1, "只存在于 epoch 里的路由不得丢行（R4）");
+	assert.equal(result.routes.reduce((acc, r) => acc + r.calls, 0), result.totals.calls);
+});
+
+test("排行行形状：与 workspaces 同形状（rt + 四桶 + calls），不含额外字段", () => {
+	const summary = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 1, cw: 2, out: 3, rt: "a/b" }] };
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-20" });
+	assert.deepEqual(Object.keys(result.routes[0]).sort(), ["calls", "cr", "cw", "in", "out", "rt"], "复用 client 的 tokstatsHit/tokstatsBilled 所需的字段");
+});
+
 
 // ── 阶段 2：单元注册 / 汇总 / 降级 ──────────────────────────────────────────
 
@@ -586,7 +864,7 @@ test("单元注册：key/stateVersion 走 ctx.inject 软依赖", () => {
 	startTokstats(ctx);
 	assert.equal(state.registered.length, 1);
 	assert.equal(state.registered[0].key, TOKSTATS_KEY);
-	assert.equal(state.registered[0].stateVersion, 2);
+	assert.equal(state.registered[0].stateVersion, 3);
 });
 
 test("projection 缺席：不注册单元，且不抛错（I8）", () => {
@@ -805,7 +1083,7 @@ test("E1 折叠区间在读取期排除，避免与 epoch 合计双计", async (
 			[TOKSTATS_KEY]: {
 				w: HEADER.cwd,
 				// 明细两格落在 epoch 区间内（已被折进合计），读取期必须跳过它们
-				e: { start: "2026-01-01", end: "2026-09-21", buckets: epochBuckets },
+				e: { start: "2026-01-01", end: "2026-09-21", routes: [{ rt: "", buckets: epochBuckets }] },
 				rows: [
 					{ d: "2026-01-05", b: 1, calls: 2, in: 5000, cr: 0, cw: 0, out: 40 },
 					{ d: "2026-02-05", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 5 },
