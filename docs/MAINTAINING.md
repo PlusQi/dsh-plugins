@@ -95,6 +95,19 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
 - **冷折叠耗时实测**（2026-10-21，本机 42 会话 / 24.1 MB 压缩日志）：清掉本插件缓存行后，从点开面板到出现首行数据 **6.7 s**；缓存建好后再次打开 **125 ms**；单次 `summary` RPC **26–31 ms**。冷折叠是一次性代价，`stateVersion` 变更的直接后果。**注意聚合数字会受检查点影响**：已结束会话走 `cachedSnapshot`（可能滞后于日志），活会话才冷读——实测同一时刻面板显示 2674 次而全量日志折叠是 2771 次，差额全部来自检查点滞后，不是归因缺陷。
 - **不改的东西**：RPC 通道名 `/dsh-plugins.tokstats` 与端点名 `summary` 是浏览器侧契约，与投影单元 key 是两件独立的事，key 改名时通道名不动。
 
+> **改 host 半边必须重启宿主进程（踩过的坑，2026-10-21）**
+>
+> 宿主的 `@deepseek-ai/dsh-client-hmr` 会**热替换 client bundle**（每 500 ms 比对 `lib/client.js` 的 mtime/ctime/size，变了就 `rebuilt()` 并经 `/plugins/events` SSE 推给浏览器），所以改 `lib/client.js` 后刷新页面即生效。但它**只管 browser 侧**：`lib/index.js` 的 host 半边由 cordis 在启动时 import 并常驻内存，**hmr 不会重新加载它**，必须重启宿主进程。
+>
+> 误判的典型症状：**新的客户端 + 旧的 host**。此时聚合返回值里没有 `routes` 字段，而新 client 按硬规则 6 的旧-host 兼容设计**整卡不渲染**——表现是「刷新了还是没有模型排行卡」，而不是「卡显示旧数据」。同时缓存里会继续出现旧 key `tokstats@ver2` 的行（那是旧 host 写的），这是最快的判别信号：
+>
+> ```powershell
+> # 有 tokstats@ver2 → host 半边还是旧的
+> Select-String -Path "$env:DSH_HOME\storages\session_projcache\sessions\*.json" -Pattern '"tokstats":\{"ver":2'
+> ```
+>
+> 注意 desktop profile 由 Electron 独占，**不能**用 `dsh --profile desktop` 另起实例（会报 `profile "desktop" is managed exclusively by the Electron application`），只能退出应用再重开（不是关窗口——可能只是隐藏到托盘）。
+
 依赖（全部软依赖，缺席均不抛错）：
 - slot：`main`（关键 keyed slot，id 必须与 panellist 的 `id` 一致）+ `sidebar.panellist`（列表项，第二参数是 `({ size })` 图标组件）；
 - host 服务：`ctx.sessionProjections`（`register`）、`ctx.sessionQuery`（`listSessions` / `readSession`）、`ctx.sessionProjectionCache`（`cachedSnapshot` / `coldSnapshot`，经 `ctx.get` 惰性取）、`ctx.webServer`（自建 prefix 路由挂 RPC 通道）；
