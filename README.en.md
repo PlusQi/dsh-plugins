@@ -11,7 +11,7 @@ All plugins live in a single pack (one repo = one profile bundle): install once 
 | Plugin      | Function                                                                                          |
 | ----------- | ------------------------------------------------------------------------------------------------- |
 | **tokprev** | Three-part preview below the Composer: next input · draft · est. output (only the draft increment the official ContextMeter cannot show) |
-| **tokstats** | "Token analytics" full panel in the sidebar: context-length distribution + weekly trend + workspace grouping + promptopt usage, with 90-day / 30-day / all-time windows |
+| **tokstats** | "Token analytics" full panel in the sidebar: metric cards + daily calls + context-length distribution + weekly trend + workspace ranking + promptopt usage, with 90-day / 30-day / all-time windows |
 | **promptopt** | Star-icon button in the composer's tool row (hover for the tooltip): restructure the draft faithfully into structured input, compare original vs. restructured, and **adopt** it into the input only if you like it |
 
 > **tokprev** is a pure interface plugin; **tokstats** and **promptopt** also ship a host-side half (one registers a session projection unit and aggregates, the other makes a single side-channel model call).
@@ -47,16 +47,20 @@ Cross-session token statistics: the host folds tokens within one session only; t
 
 ![tokstats panel](./docs/assets/tokstats-en.png)
 
-"Token analytics" in the sidebar list opens a **full panel**:
+"Token analytics" in the sidebar list opens a **full panel**, layered top to bottom:
 
-- **Context length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)` with requests / input / output / cache-hit rate;
-- **Trend**: requests and input/output grouped by natural week (Monday-based);
-- **Workspaces**: a picker for all workspaces or one of them (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted);
-- **Prompt restructure usage**: promptopt's started / adopted / dismissed counts and the character delta on adoption (the section is hidden when promptopt is not enabled).
+- **Metric cards** (four): calls (with the per-day rate for the window), billed input (split into input / cache read), output (with cache write), and cache-hit rate — scale and cache quality at a glance;
+- **Daily calls** (a full-width bar chart): it decides per window whether to draw each day or merge days into columns (per-day within 60 days), and bar height uses a square-root scale — real daily volumes differ by up to 100×, and on a linear scale everything but the peak collapses into a hairline; the peak date and count sit in the card's top-right corner and exact numbers are in the hover tooltips;
+- **Context length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)`; each row is label + share bar + call count, with the four-bucket detail (input / output / hit rate) on a second line, and the peak bucket in the card corner;
+- **Trend (weekly)**: calls / input / output as four columns grouped by natural week (Monday-based); weekly totals always add up to the grand total (the weekly view is folded from the daily series — a single source of truth, so the two can never drift apart);
+- **Workspaces**: ranked by call count with share bars, labelled by the last two path segments (the full path is in the tooltip); a picker switches to a single workspace (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted);
+- **Prompt restructure usage**: promptopt's started / adopted / dismissed counts, adoption rate, and the character delta on adoption (the card is hidden when promptopt is not enabled).
+
+Narrow windows (main area under 900px) collapse to a single column; the refresh button in the top-right corner re-fetches even when the window and workspace are unchanged.
 
 Same accounting as the host: billed input = `inputTokens + cacheReadTokens + cacheWriteTokens`; the final `assistant/message.usage` of a `(turn, step)` replaces its usage-chunk sample (no double counting).
 
-Three time windows — last 90 days, last 30 days, all time. Data is fetched when the panel opens and when you change the window or workspace; there is no resident push, because this panel does not need to tick.
+Three time windows — last 90 days, last 30 days, all time. Data is fetched when the panel opens, when you change the window or workspace, and when you hit refresh; there is no resident push, because this panel does not need to tick.
 
 Right after the first install the panel shows "Scanning…"; missing host-side services show an explanatory note instead of an error. **This plugin writes no files of its own**: the fold state is persisted by the official session projection cache, so deleting the old `storages/tokstats-checkpoint.json` from a previous version changes nothing.
 

@@ -64,7 +64,7 @@ git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # 必做：#vX.Y.Z 固定安�
 
 UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.assistant-actions` 的每轮徽标已在 v0.6.0 删除，官方 TurnUsagePanel 已覆盖该信息）；投影字段 `contextPressure`（**只此一个**：`contextBreakdown` 依赖已删）；`AssistantMessageNode.usage`（仅取输出历史算 P25–P75）。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
 
-### tokstats host 侧行为（v0.6.0 起）
+### tokstats host 侧行为（v0.6.0 起；v0.7.0 加每日序列）
 
 架构：**注册一个 per-session 投影单元**，持久化与冷启动交给官方管线，本插件不写任何自有文件。
 
@@ -73,11 +73,19 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
 - **折叠语义**：计费输入 = `in + cr + cw` 落 2 的幂桶；`seq < seed` 的样本跳过（fork 前缀父会话已计过）；同 `(turn, step)` 的后一样本替换前一样本（差值法：先减旧再加新，跨桶也正确）；无关事件返回同一引用（`Object.is` 成立）。
 - **E1 折叠**：窗口（`config.windowDays`，缺省 90）之外的明细按桶加进 `epoch.buckets`，`rows` 本体不删不改；读取期按 `[epoch.start, epoch.end)` 排除明细并改计 epoch 合计，因此「折叠前后明细条数不变、各桶数字逐项一致」两条同时成立。
 - **汇总**：面板打开时经 RPC 现算。逐会话先 `cachedSnapshot(meta, ["tokstats"])`（零 I/O），取不到才 `readSession` + `coldSnapshot` 冷折叠兜底。根工作区在汇总侧按 `listSessions()` 的 header 链解析（`init` 拿不到 headersById）。
-- **版本作废**：抬 `stateVersion` 即让旧缓存行被 `row.ver !== def.stateVersion` 丢弃，不需要写迁移。
+- **汇总输出形状**（RPC `summary` 端点返回值，面板唯一消费面）：
+  ```
+  { buckets[7], daily[], weekly[], workspaces[], totals, windowStart, windowDays, generatedAt, workspace? }
+  totals / 每个 daily 行 / 每个 workspace 行：{ calls, in, cr, cw, out }
+  ```
+  - `daily` 是**时间维度的唯一真源**：`weekly` 由它按自然周（周一）归并，不再独立遍历明细——两趟各自过滤 epoch 与窗口时，任一处漏条件都会让「周合计 ≠ 日合计」只能靠人工对账发现。现在周合计之和恒等于 `totals`。
+  - `workspaces` 按 `rootWorkspace` **累加**合并（同工作区多会话是常态：fork 与并行对话）。v0.6.0 曾用 `set()` 覆盖，后一个会话整段盖掉前一个；v0.7.0 修。
+  - `daily` 的 `day` 是 host 本地自然日键；epoch 合计用区间末前一天当代表日（与既有周归并口径一致）。
+- **版本作废**：抬 `stateVersion` 即让旧缓存行被 `row.ver !== def.stateVersion` 丢弃，不需要写迁移。注意 `daily` 是**聚合期派生**、不进投影状态，所以本次加字段**不需要**抬 `stateVersion`。
 
 依赖（全部软依赖，缺席均不抛错）：
 - slot：`main`（关键 keyed slot，id 必须与 panellist 的 `id` 一致）+ `sidebar.panellist`（列表项，第二参数是 `({ size })` 图标组件）；
-- host 服务：`ctx.sessionProjections`（`register`）、`ctx.sessionQuery`（`listSessions` / `readSession`）、`ctx.sessionProjectionCache`（`cachedSnapshot` / `coldSnapshot`，经 `ctx.get` 惰性取）、`ctx.connection.rpc.handle`；
+- host 服务：`ctx.sessionProjections`（`register`）、`ctx.sessionQuery`（`listSessions` / `readSession`）、`ctx.sessionProjectionCache`（`cachedSnapshot` / `coldSnapshot`，经 `ctx.get` 惰性取）、`ctx.webServer`（自建 prefix 路由挂 RPC 通道）；
 - `sessionQuery` 契约提醒：base 以 `path: ':memory:'` + `openAt: never` 挂载，**服务照常注册**（注册在构造函数里），`openAt: never` 只关全文检索。`listSessions` / `readSession` 走 live-preferred 语料，从不打开 SQLite——这是本插件敢直接依赖它、而不去碰 `sessionPersistence` 私有面的原因。
 
 ### promptopt host 侧行为
