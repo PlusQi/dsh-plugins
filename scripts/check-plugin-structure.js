@@ -135,6 +135,27 @@ for (const [i, line] of clientText.split("\n").entries()) {
 	}
 }
 
+// ── I11：路由来源只有 assistant/message.source，不得回落到请求侧事件 ──
+//
+// 请求侧事件带的是**配置快照**（`data.header.config`，且有 initial / change /
+// series / resume 四种 reason），与 usage 的结算语义不同源。读它会让「路由」与
+// 「用量」来自两条独立路径，正是 SPEC Q7 明确排除的耦合——它只能补上极少数
+// 未标注样本（实测 0.18%），代价是数字从此不可对账。
+//
+// 与 `DIMENSION_USE`（跳过注释行）相反，这里**注释行也扫**：这个约束太容易在后续
+// 维护里被一句「顺便从那里补一下」破坏，而它的形式又极具体（就一个词）。代价是
+// 实现里连说明文字都不能写这个词——lib/index.js 的注释改用「请求侧的事件」表述。
+const FORBIDDEN_ROUTE_SOURCE = /request\/header/;
+for (const [i, line] of indexText.split("\n").entries()) {
+	if (FORBIDDEN_ROUTE_SOURCE.test(line)) {
+		problems.push(`lib/index.js L${i + 1}: 出现 request/header —— 路由只允许来自 assistant/message.source（I11），请求侧是配置快照、与 usage 结算不同源`);
+	}
+}
+// 同一约束的代码形态兜底：即使换个词，读 header.config 也一样越界。
+if (/\bheader\s*\.\s*config\b/.test(indexText)) {
+	problems.push("lib/index.js: 出现 header.config 读取 —— 请求侧配置快照不得作为路由来源（I11）");
+}
+
 // ── 孤儿插件（注册但无 patch 行，缺 host 锚点）：提示不阻塞 ──
 const activated = new Set(rows.map((r) => r.plugin));
 for (const key of registered.keys()) {
