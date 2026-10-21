@@ -20,6 +20,7 @@ import {
 const NS = "dsh-plugins.tokstats";
 const PANEL_ID = "tokstats";
 const CHANNEL = "/dsh-plugins.tokstats";
+const TOKSTATS_LABELS = ["[0,4K)", "[4K,8K)", "[8K,16K)", "[16K,32K)", "[32K,64K)", "[64K,128K)", "[128K,∞)"];
 
 // ── 测试装配 ───────────────────────────────────────────────────────────────
 
@@ -44,8 +45,11 @@ function panelPropsOf(rpc) {
 			"state.pending": "统计中…",
 			"range.days": "近 {count} 天",
 			"range.all": "全部",
+			"action.refresh": "重新统计",
 			"section.bucket": "上下文长度分布（按计费输入）",
+			"section.daily": "每日调用量",
 			"section.trend": "趋势（按周）",
+			"section.workspace": "工作区排行",
 			"workspace.all": "全部工作区",
 			"empty.noService": "统计服务不可用，无法读取会话数据",
 			"empty.noData": "暂无数据（还没有 usage 记录）",
@@ -65,10 +69,15 @@ function makeSummary(overrides = {}) {
 	buckets[6] = { calls: 1, in: 200000, cr: 0, cw: 0, out: 50 };
 	return {
 		buckets,
-		weekly: [{ weekStart: "2026-10-19", calls: 3, in: 201000, out: 250 }],
+		// 日序列是周趋势的真源（v0.7.0）：两格都落在 2026-10-19 那一周。
+		daily: [
+			{ day: "2026-10-19", calls: 2, in: 200000, cr: 0, cw: 0, out: 200 },
+			{ day: "2026-10-20", calls: 1, in: 1000, cr: 3000, cw: 0, out: 50 },
+		],
+		weekly: [{ weekStart: "2026-10-19", calls: 3, in: 201000, cr: 3000, cw: 0, out: 250 }],
 		workspaces: [
-			{ path: "D:\\proj\\alpha", calls: 3, in: 201000, out: 250 },
-			{ path: "D:\\proj\\beta", calls: 1, in: 4096, out: 10 },
+			{ path: "D:\\proj\\alpha", calls: 3, in: 201000, out: 250, cr: 3000, cw: 0 },
+			{ path: "D:\\proj\\beta", calls: 1, in: 4096, out: 10, cr: 0, cw: 0 },
 		],
 		totals: { calls: 3, in: 201000, cr: 3000, cw: 0, out: 250 },
 		windowStart: "2026-07-23",
@@ -196,16 +205,36 @@ test("AC-9：桶分布 7 行全渲染，非零桶显示数值、零桶显示破�
 	const { react, main, t } = setupClient({ rpc });
 	const tree = await renderPanel(react, main, { t });
 	const nodes = nodesOf(tree);
-	const labels = nodes.filter((n) => typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-rowLabel")).map((n) => textOf(n));
-	for (const bucket of ["[0,4K)", "[4K,8K)", "[8K,16K)", "[16K,32K)", "[32K,64K)", "[64K,128K)", "[128K,∞)"]) {
+	// v0.7.0 起桶行是比例条（meter），标签与数值各占一列、明细另起一行。
+	const labels = nodes.filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-meterLabel").map((n) => textOf(n));
+	for (const bucket of TOKSTATS_LABELS) {
 		assert.ok(labels.includes(bucket), `桶 ${bucket} 应有一行`);
 	}
-	const dim = nodes.filter((n) => typeof n.props.className === "string" && /dsh-tokstats-dim/.test(n.props.className));
-	assert.equal(dim.length, 5, "零桶行加 dim（5 个空桶）");
+	const dimBuckets = nodes.filter((n) => typeof n.props.className === "string"
+		&& /dsh-tokstats-dim/.test(n.props.className)
+		&& TOKSTATS_LABELS.some((label) => textOf(n).startsWith(label)));
+	assert.equal(dimBuckets.length, 5, "零桶行加 dim（5 个空桶）");
 	assert.ok(textOf(tree).includes("—"), "零桶显示破折号");
 });
 
-test("AC-9：趋势分区渲染周行", async () => {
+test("桶行：计数与四桶明细分两行（条形图长度不被长数值挤压）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const meters = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-meter");
+	const bigBucket = meters.find((n) => textOf(n).startsWith("[128K,∞)"));
+	assert.ok(bigBucket, "最高桶行应存在");
+	const value = nodesOf(bigBucket).find((n) => n.props.className === "dsh-tokstats-meterValue");
+	const detail = nodesOf(bigBucket).find((n) => n.props.className === "dsh-tokstats-meterDetail");
+	assert.equal(textOf(value), "1 次", "数值列只放计数");
+	assert.match(textOf(detail), /输入 200K · 输出 50 · 命中 0%/, "四桶明细在第二行");
+	// 比例条按调用次数占比：1/3 ≈ 33.3%
+	const fill = nodesOf(bigBucket).find((n) => n.props.className === "dsh-tokstats-meterFill");
+	assert.equal(fill.props.style.width, "33.3%");
+});
+
+test("AC-9：趋势分区渲染周行（四列表：周起点 / 次数 / 输入 / 输出）", async () => {
 	const rpc = makeRpcStub();
 	rpc.respond(() => ({ ok: true, value: makeSummary() }));
 	const { react, main, t } = setupClient({ rpc });
@@ -213,7 +242,8 @@ test("AC-9：趋势分区渲染周行", async () => {
 	const text = textOf(tree);
 	assert.ok(text.includes("趋势（按周）"), "趋势分区标题");
 	assert.ok(text.includes("10/19"), "周起点按 M/D 显示");
-	assert.ok(text.includes("3 次"), "周行带调用次数");
+	assert.ok(text.includes("201K"), "周行带输入合计");
+	assert.ok(text.includes("250"), "周行带输出合计");
 });
 
 test("AC-9：工作区切换器出现且含「全部工作区」与各项", async () => {
@@ -278,10 +308,145 @@ test("降级：传输抛异常时显示空态，不抛错", async () => {
 
 test("空数据：buckets 全零时显示「暂无数据」", async () => {
 	const rpc = makeRpcStub();
-	rpc.respond(() => ({ ok: true, value: makeSummary({ buckets: Array.from({ length: 7 }, () => ({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 })), weekly: [], workspaces: [] }) }));
+	rpc.respond(() => ({ ok: true, value: makeSummary({
+		buckets: Array.from({ length: 7 }, () => ({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 })),
+		daily: [],
+		weekly: [],
+		workspaces: [],
+		totals: { calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+	}) }));
 	const { react, main, t } = setupClient({ rpc });
 	const tree = await renderPanel(react, main, { t });
 	assert.ok(textOf(tree).includes("暂无数据"));
+});
+
+// ── v0.7.0 统计面板：KPI / 每日柱 / 工作区排行 / 刷新 ────────────────────────
+
+test("KPI 四卡：调用次数 / 计费输入 / 输出 / 缓存命中率，数值来自 totals", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const kpis = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-kpi");
+	assert.equal(kpis.length, 4, "四张指标卡");
+	const values = kpis.map((n) => textOf(n));
+	// totals: calls 3 / in 201000 / cr 3000 / cw 0 / out 250 → 计费输入 204K，命中率 1%
+	assert.ok(values[0].includes("3"), "调用次数");
+	assert.ok(values[1].includes("204K"), "计费输入 = in + cr + cw");
+	assert.ok(values[2].includes("250"), "输出合计");
+	assert.ok(values[3].includes("1%"), "命中率 = cr / (in+cr+cw)");
+});
+
+test("KPI：窗口天数参与日均换算（近 90 天 → 3/90 ≈ 0.0）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ windowDays: 1 }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const kpis = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-kpi");
+	assert.ok(textOf(kpis[0]).includes("3.0"), "1 天窗口下日均 = 3.0");
+});
+
+test("每日柱状图：按窗口跨度压缩成至多 60 列，柱高按峰值归一", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const bars = nodesOf(tree).filter((n) => typeof n.props.className === "string" && /(?:^|\s)dsh-tokstats-bar(?:\s|$)/.test(n.props.className));
+	assert.ok(bars.length > 0, "应有柱位");
+	assert.ok(bars.length <= 60, `列数应 ≤ 60，实际 ${bars.length}`);
+	assert.ok(textOf(tree).includes("每日调用量"), "每日分区标题");
+	const fills = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-barFill");
+	const heights = fills.map((n) => Number.parseFloat(n.props.style.height));
+	assert.ok(heights.includes(100), "峰值列应为 100%");
+	assert.ok(heights.every((h) => h > 0 && h <= 100), "柱高在 (0,100] 内");
+});
+
+test("每日柱：零调用列不画柱（只有柱位，不画 2px 假数据）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const bars = nodesOf(tree).filter((n) => typeof n.props.className === "string" && /(?:^|\s)dsh-tokstats-bar(?:\s|$)/.test(n.props.className));
+	const fills = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-barFill");
+	// fixture 只有 10/19、10/20 两天有数据，但图表从首个数据日画到今天（含零日）
+	assert.ok(bars.length >= fills.length, "柱位不少于填充柱");
+	assert.equal(fills.length, 2, "只有两天有数据 → 只有两根柱");
+});
+
+test("每日柱：起点不早于首个数据日（避免整段空窗口）", async () => {
+	const rpc = makeRpcStub();
+	// 数据只有 10/19–10/20 两天，windowStart 却是 90 天前：图表应从 10/19 画起。
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const axis = nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-axis");
+	const axisText = textOf(axis);
+	assert.ok(axisText.startsWith("10/19"), `左轴应为首个数据日 10/19，实际 ${axisText}`);
+});
+
+test("每日柱：无 daily 字段时整卡不渲染（兼容旧 host 返回值）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ daily: undefined }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.ok(!textOf(tree).includes("每日调用量"), "无日序列时不显示空图");
+	assert.ok(textOf(tree).includes("趋势（按周）"), "其余卡片照常");
+});
+
+test("工作区排行：按调用次数排序并显示占比条", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const text = textOf(tree);
+	assert.ok(text.includes("工作区排行"), "工作区卡片标题");
+	const meters = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-meter");
+	const workspaceMeters = meters.filter((n) => textOf(n).includes("proj"));
+	assert.equal(workspaceMeters.length, 2, "两个工作区各一行");
+	// alpha 3 次 / beta 1 次 → 占比 75% / 25%
+	const fills = nodesOf(workspaceMeters[0]).filter((n) => n.props.className === "dsh-tokstats-meterFill");
+	assert.equal(fills[0].props.style.width, "75.0%");
+});
+
+test("刷新按钮：点击后重跑一次 RPC（窗口/工作区不变也生效）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const props = { t };
+	let tree = main.comp(props);
+	react.runEffects();
+	await new Promise((r) => setImmediate(r));
+	assert.equal(rpc.calls.filter((c) => c.endpoint === "summary").length, 1);
+
+	react.reset();
+	const refresh = nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-refresh"));
+	assert.ok(refresh, "刷新按钮应渲染");
+	assert.equal(refresh.props["aria-label"], "重新统计");
+	refresh.props.onClick();
+	react.reset();
+	tree = main.comp(props);
+	react.runEffects();
+	await new Promise((r) => setImmediate(r));
+	assert.equal(rpc.calls.filter((c) => c.endpoint === "summary").length, 2, "刷新再发一次");
+});
+
+test("页脚：右侧显示统计区间（窗口下界 – 今天）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const range = nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-footRange");
+	assert.ok(range, "页脚区间应渲染");
+	assert.match(textOf(range), /7\/23 – \d{1,2}\/\d{1,2}/, "窗口下界 2026-07-23 → 7/23");
+});
+
+test("页脚：windowStart 为空（全部档）时显示「全部历史」", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ windowStart: "" }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const range = nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-footRange");
+	assert.equal(textOf(range), "全部历史");
 });
 
 test("页脚：显示生成时刻（固定 24 小时制）", async () => {

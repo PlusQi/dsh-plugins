@@ -227,9 +227,84 @@ test("聚合：窗口过滤 + 工作区分组 + 周趋势分组", () => {
 	assert.equal(result.workspaces[0].calls, 3);
 });
 
+test("聚合：日序列按日升序、逐日四桶齐全（面板柱状图的唯一真源）", () => {
+	const summary = {
+		w: W_ALPHA,
+		e: null,
+		rows: [
+			{ d: "2026-10-20", b: 5, calls: 1, in: 70000, cr: 0, cw: 0, out: 5 },
+			{ d: "2026-10-19", b: 6, calls: 2, in: 200000, cr: 100, cw: 7, out: 10 },
+			{ d: "2026-06-01", b: 0, calls: 3, in: 100, cr: 0, cw: 0, out: 1 },
+		],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 30, today: "2026-10-20" });
+	assert.deepEqual(result.daily.map((d) => d.day), ["2026-10-19", "2026-10-20"], "窗口外的日不出现");
+	assert.deepEqual(
+		Object.keys(result.daily[0]).sort(),
+		["calls", "cr", "cw", "day", "in", "out"],
+		"日行形状与 totals 同四桶 + day",
+	);
+	assert.equal(result.daily[0].calls, 2);
+	assert.equal(result.daily[0].in, 200000);
+	assert.equal(result.daily[0].cr, 100);
+	assert.equal(result.daily[0].cw, 7);
+	assert.equal(result.daily[0].out, 10);
+});
+
+test("周趋势由日序列归并：各周合计之和恒等于总计（单趟真源，不漂移）", () => {
+	const summary = {
+		w: W_ALPHA,
+		e: null,
+		rows: [
+			{ d: "2026-10-19", b: 6, calls: 2, in: 200000, cr: 10, cw: 0, out: 10 },
+			{ d: "2026-10-20", b: 5, calls: 1, in: 70000, cr: 20, cw: 5, out: 5 },
+			// 跨周：2026-10-26 属于下一自然周（周一）
+			{ d: "2026-10-26", b: 4, calls: 4, in: 40000, cr: 30, cw: 0, out: 9 },
+		],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-27" });
+	assert.deepEqual(result.weekly.map((w) => w.weekStart), ["2026-10-19", "2026-10-26"]);
+	const weeklyCalls = result.weekly.reduce((sum, w) => sum + w.calls, 0);
+	const weeklyIn = result.weekly.reduce((sum, w) => sum + w.in, 0);
+	const weeklyOut = result.weekly.reduce((sum, w) => sum + w.out, 0);
+	const dailyCalls = result.daily.reduce((sum, d) => sum + d.calls, 0);
+	assert.equal(weeklyCalls, result.totals.calls, "周合计之和 = 总计");
+	assert.equal(weeklyCalls, dailyCalls, "周合计之和 = 日合计之和");
+	assert.equal(weeklyIn, result.totals.in);
+	assert.equal(weeklyOut, result.totals.out);
+	assert.equal(result.weekly[0].cr, 30, "缓存读也随周归并（面板 tooltip 要）");
+	assert.equal(result.weekly[0].cw, 5);
+});
+
+test("聚合：epoch 合计计入日序列（折叠前的历史仍能在柱状图与周趋势上看见）", () => {
+	const summary = {
+		w: W_ALPHA,
+		e: {
+			start: "2026-01-01",
+			end: "2026-09-21",
+			buckets: [
+				{ calls: 2, in: 5000, cr: 0, cw: 0, out: 20 },
+				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+				{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
+			],
+		},
+		rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 1 }],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" });
+	// epoch 用区间末前一天（2026-09-20）当代表日
+	assert.deepEqual(result.daily.map((d) => d.day), ["2026-09-20", "2026-10-20"]);
+	assert.equal(result.daily[0].calls, 2);
+	assert.equal(result.daily[0].out, 20);
+	assert.equal(result.totals.calls, 3);
+});
+
 test("聚合：同一根工作区的多个会话必须累加（不是后者覆盖前者）", () => {
 	// 回归：v0.6.0 的 workspaces.set() 会让同工作区的后一个会话整段覆盖前一个，
-	// 表现为「工作区行次数远小于总计」。
+	// 表现为「工作区排行各行的次数远小于总计」（v0.7.0 的排行条形图暴露）。
 	const one = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 100, cr: 0, cw: 0, out: 10 }] };
 	const two = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 3, in: 200, cr: 50, cw: 5, out: 20 }] };
 	const result = tokstatsAggregate([
@@ -239,13 +314,13 @@ test("聚合：同一根工作区的多个会话必须累加（不是后者覆�
 	assert.equal(result.workspaces.length, 1, "同一工作区只出一行");
 	assert.equal(result.workspaces[0].calls, 5, "2 + 3");
 	assert.equal(result.workspaces[0].in, 300);
+	assert.equal(result.workspaces[0].cr, 50);
+	assert.equal(result.workspaces[0].cw, 5);
 	assert.equal(result.workspaces[0].out, 30);
 	assert.equal(result.workspaces[0].calls, result.totals.calls, "只有一个工作区时它必须等于总计");
-	assert.equal(result.workspaces[0].in, result.totals.in, "输入合计也必须对齐总计");
 });
 
-test("聚合：workspace 过滤只留匹配的会话", () => {
-	const a = { w: "a", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] };
+test("聚合：workspace 过滤只留匹配的会话", () => {	const a = { w: "a", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] };
 	const b = { w: "b", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1 }] };
 	const all = tokstatsAggregate([
 		{ rootWorkspace: "a", summary: a },
