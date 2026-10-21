@@ -49,7 +49,7 @@ Cross-session token statistics: the host folds tokens within one session only; t
 
 "Token analytics" in the sidebar list opens a **full panel**, in four bands top to bottom (the daily chart and each pair of side-by-side cards take one band):
 
-- **Metric cards** (four): calls (with the per-day rate for the window), billed input (split into input / cache read), output (with cache write), and cache-hit rate — scale and cache quality at a glance;
+- **Metric cards** (four): calls (with the per-day rate for the window), input (split into uncached / cache read), output (with cache write), and cache-hit rate — scale and cache quality at a glance;
 - **Daily calls** (a full-width bar chart): it decides per window whether to draw each day or merge days into columns (per-day within 60 days), and bar height uses a square-root scale — real daily volumes differ by up to 100×, and on a linear scale everything but the peak collapses into a hairline; the peak date and count sit in the card's top-right corner and exact numbers are in the hover tooltips;
 - **Context length distribution**: billed input binned into power-of-two buckets `[0,4K)…[128K,∞)`; each row is label + share bar + call count, with the four-bucket detail (input / output / hit rate) on a second line, and the peak bucket in the card corner;
 - **Trend (weekly)**: calls / input / output as four columns grouped by natural week (Monday-based); weekly totals always add up to the grand total (the weekly view is folded from the daily series — a single source of truth, so the two can never drift apart);

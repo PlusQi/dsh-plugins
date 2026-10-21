@@ -52,6 +52,7 @@
 | TS-14 | 活会话（`record.live === true`）**跳过缓存**直接冷读：官方检查点可能滞后且 `asOfSeq` 无法与稍后打开的日志关联（实测 fork 会话少报 80%） | `test/host-tokstats.test.mjs`「活会话跳过缓存」「非活会话仍走缓存」 | L2 |
 | TS-15 | 排行排序写死且完全确定：`calls` 降序；空串「未标注」**显式排最后**（空串字典序最前，直接排会与界面直觉相反）；同次数按 `rt` 字典序 | `test/host-tokstats.test.mjs`「calls 降序；未标注显式排最后；同次数按 rt 字典序」 | L2 |
 | TS-16 | epoch 的合计**同时计入** `routes`（否则排行会随窗口推进悄悄少行） | `test/host-tokstats.test.mjs`「epoch 的路由合计计入排行（折叠后不少行）」 | L2 |
+| TS-17 | 面板所有「输入」显示值统一为 `in+cr+cw`（KPI / 周行 / 日柱 tooltip / 工作区排行 / 模型排行同口径；日柱列聚合必须累加 `cr` / `cw`，否则 tooltip 退回未缓存口径） | `test/client-tokstats.test.mjs`「面板所有「输入」显示值统一为 in+cr+cw（KPI / 周行 / 日柱 tooltip / 工作区 / 模型排行）」 | L2 |
 
 ## promptopt（PO）
 

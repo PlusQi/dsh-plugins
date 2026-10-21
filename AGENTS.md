@@ -54,6 +54,7 @@
 | --- | --- | --- |
 | 输入 / 输出 | in / out | 行值 `{input} in · {output} out` |
 | 缓存读 / 缓存写 | cache read / cache write | tooltip |
+| 未缓存 | uncached | KPI 输入拆分（`{uncached} uncached`） |
 | 命中（率） | cached | 桶行 `75% cached` |
 | N 次（调用） | N call / N calls | `.one` / `.other` 分形 |
 | 未配价 | no price（行值）/ no price configured（tooltip） | 按模型区 |
