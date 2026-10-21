@@ -118,6 +118,33 @@ scope 可省略：跨多模块或纯性质类提交（如 `docs: 修正错别字
 - 关联 issue 用 footer：`Closes #123` / `Fixes #456`（自动关闭）、`Refs #789`（仅引用）。
 - 例外标记：`Policy-Exception: <原因> -- <无法拆分/验证的说明>`，一条提交至多一条，理由为空视为无豁免。
 
+## 忽略规则分层
+
+忽略规则分两处，**判定标准只有一条**：换一个维护者、换一台机器后，这条规则还该不该生效？
+
+| 该生效 | 放 | 分发 | 说明 |
+| --- | --- | --- | --- |
+| 是 | `.gitignore` | 随仓库 | 项目公共约定。克隆即生效，是唯一进版本控制的忽略源 |
+| 否 | `.git/info/exclude` | 仅本 clone | 个人偏好与本机产物。不受 git 保护，重新 clone 即丢失 |
+
+**优先级**：命令行 > `.gitignore` > `.git/info/exclude` > `core.excludesFile`。三者同时命中时以 `.gitignore` 为准，所以同一模式不要在两处重复写——重复会让「改哪份才生效」变成猜谜。
+
+**分层实例**（`.gitignore` 里不出现个人偏好，`.git/info/exclude` 里不出现项目约定）：
+
+| 类别 | 归属 | 理由 |
+| --- | --- | --- |
+| `node_modules/`、`*.tgz`、`*.log`、`*.pid` | `.gitignore` | 任何 clone 都会产生，与是谁无关 |
+| `.DS_Store`、`Thumbs.db` | `.gitignore` | 按操作系统判定的元数据，换机器仍应忽略 |
+| `.env` / `.env.*` | `.gitignore` | 凭据边界。本包当前不读 `.env`，保留此条是防日后接入时把密钥提交进历史 |
+| `docs/specs/`、`docs/debug/`、工程方法指南 | `.gitignore` | 依据「优先级」表：本地证据不随仓库分发。这是**项目决策**，不是个人偏好——任何维护者都该同样忽略 |
+| `.workbuddy/` | `.git/info/exclude` | 本机 Agent 工作区（记忆 / 调试脚本 / 截图），零 tracked 文档引用，换人不该继承 |
+| `TRAE-MAX-CONTEXT-BUG.md` | `.git/info/exclude` | 一次性排查报告，属证据记录而非仓库内容 |
+| `.vscode/`、`.idea/`、`*.code-workspace`、`*.swp`、`*~` | `.git/info/exclude` | 用哪个编辑器是个人选择，不构成项目约定。需要共享工作区设置时，改为在 `.gitignore` 里精确放行单个文件，而不是整目录 |
+
+**跨仓库通用的个人规则**（如 `**/.claude/settings.local.json`）应放 `core.excludesFile`（本机 `~/.config/git/ignore`），而非每个仓库的 `info/exclude` 各写一遍——后者 clone 即丢，会重复劳动。
+
+新增忽略条目前先问：这条在别人的机器上成立吗？不成立就放 `info/exclude`。**不要把 `.git/info/exclude` 当成「暂时放一下」的地方**——它不进历史、不进评审，写进去的规则只有本机知道。
+
 ## 分支命名规范
 
 默认直推 `master`（单人维护无 PR 流程）。需要多线并行（原型试验、多插件并行开发）时开分支，命名 `<kind>/<scope>-<slug>`：

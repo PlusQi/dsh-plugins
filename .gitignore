@@ -1,12 +1,35 @@
+# 项目公共忽略规则 —— 随仓库分发，克隆即生效。
+# 判定标准：换一个维护者、换一台机器后，这条规则还该不该生效？该 → 写在这里。
+#
+# 个人偏好与本机工具产物放 .git/info/exclude：那份不进版本控制，只对当前 clone
+# 生效，且优先级低于本文件（同时命中时以本文件为准）。分层的理由见 AGENTS.md
+# 「忽略规则分层」。
+
+# ── 依赖与打包产物 ──
+# 本包零运行时依赖（AGENTS.md 硬规则 5），node_modules 只在本地 pnpm link 调试时出现。
 node_modules/
-.workbuddy/
+# npm pack 的产物；发布走 git tag，tgz 不入库。
+*.tgz
+
+# ── 运行时噪声 ──
+# dsh web 的 stdout/stderr 与 pid 文件（本地起停调试产生）。
 *.log
 *.pid
+
+# ── 操作系统元数据 ──
 .DS_Store
 Thumbs.db
+
+# ── 本地凭据 ──
+# 本包当前不读 .env（lib/ 与 scripts/ 无 process.env 引用），保留此条是给日后接入
+# 留位：一旦有人加了凭据读取，缺这条会把密钥提交进历史。
 .env
 .env.*
+
+# ── 本地留存文档：明确不随仓库分发 ──
+# 依据 AGENTS.md「优先级」表：Active spec / 设计记录 / 工程方法指南都是本地证据，
+# 不进仓库、不进包。docs/specs 下当前无任何 tracked 文件，故整棵子树一行覆盖
+# active 与 archive 两代目录，不必分开列。
+docs/specs/
 docs/debug/
-docs/specs/active/
-docs/specs/archive/
 docs/project-engineering-guardrails-guide.zh-CN.md
