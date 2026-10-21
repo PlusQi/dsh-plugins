@@ -42,6 +42,10 @@ if (pluginsBlock === null) {
 			ns: /\bns\b/.test(m[2]),
 			dicts: /\bdicts\b/.test(m[2]),
 			nsNull: /\bns:\s*null\b/.test(m[2]),
+			// ns 的两种写法都要能取出值：标识符引用（`ns: LOCALE_NS_X`）或字符串字面量
+			// （`ns: "dsh-plugins.x"`）。只认标识符会放过字面量写法，等于留一个后门。
+			nsRef: (m[2].match(/\bns:\s*([A-Za-z_$][\w$]*)/) || [])[1] ?? null,
+			nsLiteral: (m[2].match(/\bns:\s*["']([^"']+)["']/) || [])[1] ?? null,
 		});
 	}
 }
@@ -77,6 +81,26 @@ for (const [key, meta] of registered) {
 	if (!meta.nsNull && (!meta.ns || !meta.dicts)) {
 		problems.push(`lib/client.js PLUGINS.${key}: 缺 ${!meta.ns ? "ns" : "dicts"} 字段 —— 硬规则 7 要求每插件自带词典（ns = "dsh-plugins.${key}"、dicts = { zh, en }）；该插件确无任何界面文案时显式写 ns: null`);
 	}
+	// PK-07 的 ns **值**校验：字段在不在是一回事，值对不对是另一回事。
+	// 规范要求 ns 带包前缀（`dsh-plugins.<键>`）防撞车——撞车时重复注册同 (ns, locale)
+	// 会抛，整个包在浏览器侧起不来。漏前缀的 ns 与插件键同名时同样会撞。
+	//
+	// 两种写法都查：`ns: LOCALE_NS_X`（标识符引用，去 client 里找字面量）与
+	// `ns: "dsh-plugins.x"`（直接字面量）。只查前者会留下后者这个后门。
+	if (!meta.nsNull && meta.ns) {
+		let nsValue = meta.nsLiteral;
+		if (nsValue === null && meta.nsRef !== null) {
+			const decl = new RegExp(`const\\s+${meta.nsRef.replace(/\$/g, "\\$")}\\s*=\\s*["']([^"']+)["']`).exec(clientText);
+			if (decl === null) {
+				problems.push(`lib/client.js PLUGINS.${key}: ns 引用了 ${meta.nsRef}，但找不到它的字符串字面量声明 —— 无法校验命名空间是否带包前缀`);
+			} else {
+				nsValue = decl[1];
+			}
+		}
+		if (nsValue !== null && nsValue !== `dsh-plugins.${key}`) {
+			problems.push(`lib/client.js PLUGINS.${key}: ns 值为 '${nsValue}'，必须是 'dsh-plugins.${key}'（硬规则 7 要求带包前缀防撞车；重复注册同 (ns, locale) 会抛，整包在浏览器侧起不来）`);
+		}
+	}
 }
 
 // ── 硬规则 2（require 部分）：factory 内禁止相对路径 require ──
@@ -86,14 +110,37 @@ for (const [i, line] of clientText.split("\n").entries()) {
 	}
 }
 
-// ── I2 / AC-15：host 半边不得写盘（持久化只经官方缓存） ──
+// ── host 半边源码（PK-05 / PK-08 共用） ──
+const indexPath = join(root, "lib", "index.js");
+const indexText = readFileSync(indexPath, "utf8");
+
+// ── PK-05：host 半边零运行时依赖（只许 node: 内建） ──
+//
+// 硬规则 5 的 host 延伸此前只靠评审（AGENTS.md 自己写着「规则 5 依赖评审」），
+// 但这条恰恰是**装不上的**：pnpm link 安装下插件真实路径不在宿主 node_modules
+// 树内，npm 包 import 在运行期不可解析——错了不是降级，是整个包加载失败。
+// 现在补上静态项，把「依赖评审」换成 L1。
+//
+// 逐行扫而不是全文正则：全文正则给不出行号（本脚本其余各项都给行号），
+// 且会把注释里的示例 import 也当成违规。注释行跳过，与 DIMENSION_USE 同策略。
+// 只认 ESM 形态（`import ... from "x"` / `import "x"` / `import("x")`）：
+// 本包 host 半边是 ESM；若将来改成 CJS `require("x")`，这一项会漏，需同步补。
+const INDEX_IMPORT_RE = /\bimport\s*(?:\(\s*)?(?:[^"'()]*?\bfrom\s*)?["']([^"']+)["']/;
+for (const [i, line] of indexText.split("\n").entries()) {
+	if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+	const m = INDEX_IMPORT_RE.exec(line);
+	if (m === null) continue;
+	if (!m[1].startsWith("node:")) {
+		problems.push(`lib/index.js L${i + 1}: import '${m[1]}' —— PK-05 要求 host 半边只 import node: 内建；npm 包（含 cordis/zod）在 pnpm link 安装路径下不可解析，整个包会加载失败`);
+	}
+}
+
+// ── PK-08：host 半边不得写盘（持久化只经官方缓存） ──
 //
 // 违规形态是「自己落一个 checkpoint 文件」，故拦的是写/改名/建目录这一组调用。
 // 只查调用形态而非 import：`readFileSync` 这类只读 API 不在本项范围，但 v0.6.0
 // 交付后 lib/index.js 连 node:fs 都不再 import——留一条 WARN 记录这一状态。
 const WRITE_CALL_RE = /\b(writeFileSync|writeFile|appendFileSync|appendFile|renameSync|rename|mkdirSync|mkdir|createWriteStream|truncateSync)\s*\(/;
-const indexPath = join(root, "lib", "index.js");
-const indexText = readFileSync(indexPath, "utf8");
 for (const [i, line] of indexText.split("\n").entries()) {
 	if (WRITE_CALL_RE.test(line)) {
 		problems.push(`lib/index.js L${i + 1}: 写盘调用 —— I2/AC-15 要求持久化只经官方 session-projection-cache，本包不得写 DSH_HOME/storages/ 下任何自有文件：${line.trim().slice(0, 80)}`);

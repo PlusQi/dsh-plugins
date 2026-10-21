@@ -32,7 +32,8 @@
     "cordis.patch.yml",
     "CHANGELOG.md",
     "AGENTS.md",
-    "docs/MAINTAINING.md"
+    "docs/MAINTAINING.md",
+    "docs/INVARIANTS.md"
   ],
   "license": "MIT"
 }

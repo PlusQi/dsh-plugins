@@ -1,0 +1,126 @@
+# 不变量登记表
+
+> 状态：Active
+> 适用范围：整个仓库（`lib/`、`cordis.patch.yml`、`scripts/`、`test/`）
+> 最后核验：2026-10-21
+> 维护责任：修改对应不变量的提交者
+> 证据下限：每条必须写明「证据」列；`L0` = 仅文档/评审，`L1` = 静态检查，`L2` = 可执行断言
+
+本文件是 `I*` / `AC-*` 编号的**唯一定义源**。代码、测试与 guard 的注释里出现的 ID 都在这里查定义——此前这些编号只存在于本地 SDD 文档（`docs/specs/`，不随仓库分发），导致同一编号在不同文档里有两套含义（见文末「历史编号映射」）。
+
+**读法**：`PK` = 包级（pack）、`TP` = tokprev、`TS` = tokstats、`PO` = promptopt。编号一经发布不复用；不变量作废时整行标记「已废弃」并保留，不删行。
+
+## 包级（PK）
+
+| ID | 不变量 | 证据 | 层级 |
+| --- | --- | --- | --- |
+| PK-01 | `cordis.patch.yml` 每行的 `name` 是裸包名 `'dsh-plugins'`；写成子路径只剩 host 半边 | guard「硬规则 1」 | L1 |
+| PK-02 | client 模块图按包扁平：所有插件实现在 `lib/client.js` 单文件内，禁止相对路径 `require`（factory 的 require 只认模块表词） | guard「硬规则 2（require 部分）」 | L1 |
+| PK-03 | patch 每行建一个 host fiber、`config.plugin` 是 host 分发键；client 每包单 fiber 且无条件注册 `PLUGINS` 全部插件。`PLUGINS` 注册表与 patch 行必须一一对应（新增插件漏注册即拦） | guard「硬规则 3」 | L1 |
+| PK-04 | 每插件独立样式 tag（`data-plugin-css="dsh-plugins/<id>"`），禁止包级共享 `<style>` | guard「硬规则 4」；`test/client-tokstats.test.mjs`「每插件样式 tag 独立」 | L1 + L2 |
+| PK-05 | 无构建步骤、零运行时依赖：`lib/client.js` 即最终产物（无 TS/JSX/构建脚本）；`lib/index.js` 只 import `node:` 内建，npm 包（含 cordis/zod）在 pnpm link 路径下不可解析 | guard「零运行时依赖：`lib/index.js` 只许 `node:` 前缀」 | L1 |
+| PK-06 | 兼容面优雅降级：所有宿主数据读取路径拿不到数据时渲染 null / 空态，不抛错 | 各插件的降级断言（见 TS-10 / TP / PO 各行） | L2 |
+| PK-07 | 每插件自带词典：`PLUGINS` 条目带 `ns`（值必须等于 `dsh-plugins.<键>`，带包前缀防撞车）与 `dicts`（`{ zh, en }`，zh 为键集真源，en 逐键对应）；无界面文案的插件显式写 `ns: null`。文案写成 `{name}` 占位符整句模板，带计数按 `.one`/`.other` 成对 | guard「硬规则 7：ns 字段 / ns 值 / dicts 字段」；`assertDictPair` 双向键集断言（4 个 client 测试文件） | L1 + L2 |
+| PK-08 | host 半边不写盘：持久化只经官方 `session-projection-cache`，本包不得写 `DSH_HOME/storages/` 下任何自有文件 | guard「I2 / AC-15：host 半边不得写盘」（写/改名/建目录调用） | L1 |
+| PK-09 | client 产物不持有成本维度：无 `prices` 字面量（成本维度已整体删除） | guard「I1：client 半边不得持有价格」；`test/client-tokstats.test.mjs`「client 产物无 prices 字面量」 | L1 + L2 |
+| PK-10 | client 不解释路由维度：`rt` 只作整串标签渲染，产物里不存在对 `provider` / `model` 的维度用法（属性访问 / 下标 / 键 / 拆分） | guard「DIMENSION_USE 四条正则」 | L1 |
+
+## tokprev（TP）
+
+| ID | 不变量 | 证据 | 层级 |
+| --- | --- | --- | --- |
+| TP-01 | 只注册 `conversation.composer.dock` 一个 slot；不再注册 `conversation.chat.assistant-actions`（每轮徽标已删，官方 TurnUsagePanel 覆盖） | `test/client-tokprev.test.mjs`「I9：只注册 composer.dock」 | L2 |
+| TP-02 | 只依赖 `contextPressure` 一个投影字段（加本地草稿估算），`contextBreakdown` 依赖已删 | `test/client-tokprev.test.mjs`「I10：组件只依赖 contextPressure 一个投影键」 | L2 |
+
+## tokstats（TS）
+
+| ID | 不变量 | 证据 | 层级 |
+| --- | --- | --- | --- |
+| TS-01 | `wire.view` 返回键集固定为 `w` / `e` / `rows`；浏览器侧拿不到跨会话聚合，面外字段一律不带出 | `test/host-tokstats.test.mjs`「wire.view 键集只有 w / e / rows」 | L2 |
+| TS-02 | cell 形状固定为 `{ d, b, rt, calls, in, cr, cw, out }`；`rt` 是单个**不透明字符串**（host 拼、host 解释，client 不拆） | `test/host-tokstats.test.mjs`「cell 带不透明 rt 串」 | L2 |
+| TS-03 | 抬 `stateVersion` 即让旧缓存行被 `row.ver !== def.stateVersion` 丢弃，**不写任何迁移代码**。反例：只给聚合输出加字段（不进投影状态）**不需要**抬版本 | `test/host-tokstats.test.mjs`「ver: 2 的旧缓存行被跳过，冷折叠重建成功」 | L2 |
+| TS-04 | 投影单元 key 是带包前缀的 `dsh-plugins.tokstats`（消除与宿主日后同名单元的撞车；撞车时注册抛错、静默退回冷折叠，极难排查） | `test/host-tokstats.test.mjs`「单元定义：key / stateVersion / init / apply / wire 齐备」 | L2 |
+| TS-05 | fork seed 前缀不双计：`seq < inheritedEventCount` 的样本不进入折叠 | `test/host-tokstats.test.mjs`「I4 / AC-2：fork seed 前缀不双计」 | L2 |
+| TS-06 | 同 `(turn, step)` 的终值替换而非双计：`assistant/message.usage` 覆盖该 step 的 usage chunk 采样；跨桶跨路由（按 `(d, b, rt)` 定位）都正确减回 | `test/host-tokstats.test.mjs`「I5 / AC-3」「跨桶时旧格被正确减回」 | L2 |
+| TS-07 | 折叠是纯函数：`apply(state, event)` 对无关事件返回同一引用（`Object.is` 成立） | `test/host-tokstats.test.mjs`「I6 / AC-4：无关事件返回同一引用」 | L2 |
+| TS-08 | E1 折叠不写删：窗口外明细按「桶 × 路由」进 `epoch.routes`，`rows` 本体不删不改；读取期按 `[epoch.start, epoch.end)` 排除明细并改计 epoch 合计。折叠前后明细条数、逐桶数字、逐路由合计三项同时相等 | `test/host-tokstats.test.mjs`「I7 / AC-5」「epoch 折叠保住路由粒度」 | L2 |
+| TS-09 | 排行各行次数之和**恒等于**总计次数；空串「未标注」行是差额的唯一出口 | `test/host-tokstats.test.mjs`「排行各行次数之和恒等于总计」 | L2 |
+| TS-10 | 任何数据缺失都不抛错：`source` 缺失、`rt` 非字符串、epoch 形状残缺、三种宿主服务缺席、投影注册失败，均降级不抛 | `test/host-tokstats.test.mjs` 降级矩阵（「三种服务缺席各断言一次」「epoch 形状不完整」等）；`test/client-tokstats.test.mjs`「connection 缺席时显示空态」 | L2 |
+| TS-11 | 路由来源只有 `assistant/message.data.message.source`：**不读请求侧事件**（`request/header` 是配置快照，与 usage 结算不同源，混用会让数字无法对账） | guard「I11：路由来源」两条（字面量 + `header.config`） | L1 |
+| TS-12 | `daily` 是时间维度的唯一真源：`weekly` 由它按自然周（周一）归并，不再独立遍历明细——否则任一处漏条件都会让「周合计 ≠ 日合计」只能靠人工对账 | `test/host-tokstats.test.mjs`「周趋势由日序列归并：各周合计之和恒等于总计」 | L2 |
+| TS-13 | `workspaces` 与 `routes` 按各自键**累加**合并，不用 `set()` 覆盖（同工作区多会话、同 rt 跨会话都是常态） | `test/host-tokstats.test.mjs`「同一根工作区的多个会话必须累加」「同一 rt 出现在两个会话时累加」 | L2 |
+| TS-14 | 活会话（`record.live === true`）**跳过缓存**直接冷读：官方检查点可能滞后且 `asOfSeq` 无法与稍后打开的日志关联（实测 fork 会话少报 80%） | `test/host-tokstats.test.mjs`「活会话跳过缓存」「非活会话仍走缓存」 | L2 |
+| TS-15 | 排行排序写死且完全确定：`calls` 降序；空串「未标注」**显式排最后**（空串字典序最前，直接排会与界面直觉相反）；同次数按 `rt` 字典序 | `test/host-tokstats.test.mjs`「calls 降序；未标注显式排最后；同次数按 rt 字典序」 | L2 |
+| TS-16 | epoch 的合计**同时计入** `routes`（否则排行会随窗口推进悄悄少行） | `test/host-tokstats.test.mjs`「epoch 的路由合计计入排行（折叠后不少行）」 | L2 |
+
+## promptopt（PO）
+
+| ID | 不变量 | 证据 | 层级 |
+| --- | --- | --- | --- |
+| PO-01 | meta-prompt 不含「补充上下文」类指令，且显式含「禁新增原文事实」条款（旧句 `add the context a competent reader would be missing` 必须不在场） | `test/host-promptopt.test.mjs`「meta-prompt 五条约束齐备 + 旧句消失」正反两组断言 | L2 |
+| PO-02 | 不写会话日志、不新增存储文件：计数器落官方存储域（域 `dsh_plugins_promptopt` / 表 `counters` / 单键 `totals`） | 代码审查 + guard「PK-08 写盘调用」覆盖 `lib/index.js`（本插件 host 半边同文件） | L1（写盘）+ L0（不写会话日志） |
+| PO-03 | 错误只回机器码（`bad-request` / `model-unavailable` / `internal` / `cancelled`），host 侧不拼人类可读文案——host 没有 locale 服务 | `test/host-promptopt.test.mjs`「错误响应不含人类可读文案：message 就是机器码」 | L2 |
+| PO-04 | 采纳写回的唯一路径是 `setDraft(优化文)`，且无条件 | `test/client-promptopt.test.mjs`「采纳：唯一写回路径是 setDraft」 | L2 |
+| PO-05 | 关闭弹层即 abort 在飞请求；迟到的响应不写状态 | `test/client-promptopt.test.mjs`「关闭按钮 / Esc / 点外 abort」「关闭后迟到的响应不写状态」 | L2 |
+| PO-06 | 软依赖降级：`connection` / `llm` 缺席时通道不注册（点按钮显示「模型调用失败」而非白屏）；`storageDomain` 缺席或域打不开时计数器停用并留一行 stderr 诊断，优化功能不受影响 | `test/host-promptopt.test.mjs`「connection 缺席 → 通道不注册」「storageDomain 缺席时端点仍在、计数全零」「域打不开时记警告并停用」 | L2 |
+
+## 维护规则
+
+1. **新增不变量**：先在此表加行（含证据列），再去改代码/测试；不得先写代码后补编号。
+2. **证据列不得为空**。只靠评审的条目标 `L0` 并写明「依赖评审」——把 L0 写成 L1/L2 是空壳（曾发生：旧 SPEC 声称「零运行时依赖由 guard 静态检查」，而 guard 当时并无 import 检查）。
+3. **改证据形态时**（guard 项改名、测试重命名、断言移入新文件）必须同步本表指针，否则指针失效即为漂移。
+4. **作废不变量**：整行标「已废弃（日期 + 原因）」，保留行不删除，避免编号复用造成历史误读。
+5. **不改代码里的旧编号注释**：历史 `I*` 注释保留原样，靠下表映射到新 ID；改注释会触碰 `lib/index.js` 与全部测试文件，触发「按变更范围读取」表里的 `npm test` + 重启目检，收益不抵风险。
+
+## 历史编号映射（旧 → 新）
+
+旧编号来自两份本地 SPEC，两者**重号但含义不同**，这是本表存在的主要原因。已废弃的两套旧表：
+
+### 来自 `SPEC-v0.6.0`（v0.6.0 向官方管线收敛）
+
+| 旧 | 含义（旧表原文摘要） | 新 |
+| --- | --- | --- |
+| I1 | client 侧不得持有跨会话 cells；`wire.view` 不含 `provider`/`model` | TS-01 + PK-09 |
+| I2 | 持久化只经官方缓存 | PK-08 |
+| I3 | `stateVersion` 提升即作废旧记录 | TS-03 |
+| I4 | fork seed 前缀不双计 | TS-05 |
+| I5 | 同 `(turn, step)` 终值替换 | TS-06 |
+| I6 | 折叠是纯函数 | TS-07 |
+| I7 | E1 折叠不写删 | TS-08 |
+| I8 | 任何数据缺失都不抛错 | TS-10 |
+| I9 | tokprev 不再注册 `assistant-actions` | TP-01 |
+| I10 | tokprev 只依赖 `contextPressure` | TP-02 |
+| I11 | promptopt meta-prompt 不含「补充上下文」指令 | PO-01 |
+| I12 | promptopt 不写会话日志、不新增存储文件 | PO-02 |
+| I13 | 每插件词典 ns 与注册表一致，zh/en 逐键对应 | PK-07 |
+| I14 | 零运行时依赖（host 只 import `node:` 内建） | PK-05 |
+
+### 来自 `SPEC-tokstats-routes`（v0.7.0 路由维度）
+
+| 旧 | 含义（旧表原文摘要） | 新 |
+| --- | --- | --- |
+| I1′ | client 侧不解释路由字段（`DIMENSION_USE`） | PK-10 |
+| I2 | 路由标识在 wire 里是单个不透明字符串 | TS-02 |
+| I3 | `stateVersion` 提升即作废旧记录 | TS-03 |
+| I4 | 投影 key 为 `dsh-plugins.tokstats` | TS-04 |
+| I5 | fork seed 前缀不双计（延续） | TS-05 |
+| I6 | 同 `(turn, step)` 终值替换（延续） | TS-06 |
+| I7 | 折叠是纯函数（延续） | TS-07 |
+| I8 | E1 折叠不写删，且保路由粒度 | TS-08 |
+| I9 | 排行各行次数之和恒等于总计 | TS-09 |
+| I10 | 任何数据缺失都不抛错（延续） | TS-10 |
+| I11 | 路由来源只有 `assistant/message.source` | TS-11 |
+| I12 | 每插件词典 ns 与注册表一致（延续） | PK-07 |
+| I13 | 零运行时依赖（延续） | PK-05 |
+| I14 | 宿主半边不写盘（延续） | PK-08 |
+
+**撞车示例**（同一旧编号在两套表里含义完全不同）：`I2` = 持久化经官方缓存 / 路由不透明字符串；`I9` = tokprev 不注册 assistant-actions / 排行之和恒等总计；`I11` = meta-prompt 约束 / 路由来源唯一。查旧注释时**先确认它出自哪份 SPEC**，否则会读成相反的意思。
+
+## 覆盖缺口（已知，未修复）
+
+| 缺口 | 说明 | 现状 |
+| --- | --- | --- |
+| PK-06 只有间接证据 | 「优雅降级」由各插件的降级断言分别覆盖，没有一条聚合断言；新增插件时不会自动获得覆盖 | 依赖评审 |
+| PO-02 的「不写会话日志」是 L0 | guard 只拦写盘调用，拦不住「经宿主 API 追加会话日志」这种形态（本包目前无此调用，靠评审） | 依赖评审 |
+| PK-07 的「整句模板 / one-other 成对」是 L0 | 键集一致性有自动断言，但「文案是否整句模板、记号是否误入词典」无法静态判定 | 依赖评审 |
+| 宿主契约版本矩阵未建 | 本包压着 DSH `0.2.1-rc.2` 的 7 个深契约，升级后的重验清单目前是 `docs/MAINTAINING.md` 的散文，不是表格 | 待建（见 AGENTS.md「按变更范围读取」） |
