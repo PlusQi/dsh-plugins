@@ -275,7 +275,14 @@ test("noChange：产出确有变化时为假", async () => {
 
 // ── 计数器（候选 A：storageDomain；AC-13） ─────────────────────────────────
 
-/** 伪 storageDomain：内存表 + open 计数；open 可配置为抛错。 */
+/**
+ * 伪 storageDomain：内存表 + open 计数；open 可配置为抛错。
+ *
+ * `put` 必须**异步生效**（写入在 await 之后才落到内存表），否则桩比真实域宽松：
+ * 真实域走写入链 `enqueue(async () => { await unit.putRecord(...); records.set(...) })`，
+ * 内存表在 await 之后才变。桩若同步写入，「record 完立刻 read」的竞态就测不出来
+ * ——实测在真实宿主上正是这样丢过一次回显（响应恒为 0，磁盘却已写入）。
+ */
 function makeStorageDomain({ failOpen = false } = {}) {
 	const records = new Map();
 	const calls = { open: 0, put: 0, close: 0 };
@@ -283,6 +290,8 @@ function makeStorageDomain({ failOpen = false } = {}) {
 		get: (key) => records.get(key),
 		put: async (key, value) => {
 			calls.put += 1;
+			// 模拟写入链：先 await（让出微任务），再改内存表。
+			await Promise.resolve();
 			records.set(key, value);
 		},
 	};
@@ -420,3 +429,15 @@ test("计数器域打不开时往 stderr 写一行诊断（logger.warn 不落宿
 
 
 
+
+test("事件端点回显写入后的值（put 是异步的，record 完立刻 read 会读到旧值）", async () => {
+	// 实测踩到：真实宿主上响应恒为 0/0/0，而磁盘已写入 adopted:1。
+	// 这条必须断言**响应本身**，不能只断言后续 counters 读数——后续读取时
+	// 异步 put 早已完成，看不出这个竞态。
+	const domain = makeStorageDomain();
+	const connection = await bootWithDomain({ domain });
+	const response = await connection.invoke(CHANNEL, "event", { event: "adopted", before: 10, after: 16 });
+	assert.equal(response.ok, true);
+	assert.equal(response.value.adopted, 1, "响应应回显写入后的值");
+	assert.equal(response.value.charsDelta, 6, "字符增减量也应已在响应里");
+});
