@@ -429,7 +429,6 @@ test("I1：摘要只认 w / e / rows 三键（面外字段一律不带出；rt �
 });
 
 // ── 阶段 1b：路由维度（第一批：cell 三维 + epoch 保路由） ────────────────────
-
 test("tks8-1c：tokstatsRouteOf 只认字符串 provider/model，其余归一为空串（I10）", () => {
 	assert.equal(tokstatsRouteOf({ provider: "a", model: "b" }), "a/b");
 	assert.equal(tokstatsRouteOf({ provider: "deepseek-official", model: "deepseek-v4-flash-vision-exp" }), "deepseek-official/deepseek-v4-flash-vision-exp");
@@ -585,20 +584,102 @@ test("AC-6 / I3：ver: 2 的旧缓存行被跳过，冷折叠重建成功且不�
 	assert.equal(result.ok, true, "旧版本行作废后不得抛错（AC-6）");
 	assert.equal(cache.calls.coldSnapshot, 1, "必须走冷折叠重建");
 	assert.equal(result.value.totals.calls, 2, "重建后的数字与真实日志一致");
-	assert.equal(result.value.routes, undefined, "第一批不产出 routes（产出在第二批 tka8-5a）");
+	// 第二批起 routes 由聚合产出；旧行作废重建后它必须同样可用（不复用旧形状）。
+	assert.deepEqual(result.value.routes.map((r) => r.rt), [""], "重建后的排行里只有未标注一行");
+	assert.equal(result.value.routes[0].calls, 2);
 });
 
-test("第一批边界：聚合返回值的键集不含 routes（面板外观不变的机械依据）", () => {
-	// 第一批「外观不变」的实质是「数据形状变了但没人消费」：client 只吃 RPC 聚合，
-	// 而聚合的字段集在本批不动，故面板渲染路径零变化。第二批 tka8-5a 加 routes 时
-	// 这条断言必须同步改为含 routes。
+test("聚合字段集：第二批起包含 routes（第一批的「无 routes」绊线在此解除）", () => {
 	const summary = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 1, rt: "a/b" }] };
 	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-20" });
 	assert.deepEqual(
 		Object.keys(result).sort(),
-		["buckets", "daily", "totals", "weekly", "windowStart", "workspaces"],
-		"第一批的聚合字段集与 v0.7.0 一致（routes 是第二批的增量）",
+		["buckets", "daily", "routes", "totals", "weekly", "windowStart", "workspaces"],
+		"第二批的聚合字段集 = 第一批 + routes（且没有第二个新字段）",
 	);
+	assert.deepEqual(result.routes.map((r) => r.rt), ["a/b"]);
+});
+
+// ── 阶段 1c：按路由的排行（第二批：5a…5e / AC-9…AC-11） ────────────────────
+
+test("AC-11 / tka8-5b：同一 rt 出现在两个会话时累加，不是后者覆盖前者", () => {
+	// 回归形状与 v0.7.0 的 workspaces 覆盖缺陷完全同款：同 key 的 Map.set() 会让
+	// 后一个会话整段覆盖前一个，表现是「排行各行次数远小于总计」。
+	const one = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 100, cr: 10, cw: 1, out: 10, rt: "a/b" }] };
+	const two = { w: W_BETA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 3, in: 200, cr: 20, cw: 2, out: 20, rt: "a/b" }] };
+	const result = tokstatsAggregate([
+		{ rootWorkspace: W_ALPHA, summary: one },
+		{ rootWorkspace: W_BETA, summary: two },
+	], { windowDays: 90, today: "2026-10-20" });
+	assert.equal(result.routes.length, 1, "同一 rt 只出一行");
+	assert.equal(result.routes[0].calls, 5, "2 + 3");
+	assert.equal(result.routes[0].in, 300);
+	assert.equal(result.routes[0].cr, 30);
+	assert.equal(result.routes[0].cw, 3);
+	assert.equal(result.routes[0].out, 30);
+});
+
+test("AC-9 / I9：排行各行次数之和恒等于总计（未标注兜住差额）", () => {
+	const mixed = {
+		w: W_ALPHA,
+		e: null,
+		rows: [
+			{ d: "2026-10-20", b: 0, calls: 2, in: 100, cr: 0, cw: 0, out: 10, rt: "a/b" },
+			{ d: "2026-10-20", b: 1, calls: 3, in: 100, cr: 0, cw: 0, out: 20, rt: "c/d" },
+			{ d: "2026-10-20", b: 2, calls: 4, in: 100, cr: 0, cw: 0, out: 30, rt: "" },
+		],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary: mixed }], { windowDays: 90, today: "2026-10-20" });
+	const sum = result.routes.reduce((acc, entry) => acc + entry.calls, 0);
+	assert.equal(sum, result.totals.calls, "排行之和 = 总计（R5：差额必须有出口）");
+	assert.equal(sum, 9);
+});
+
+test("AC-10 / tka8-5d：calls 降序；未标注显式排最后；同次数按 rt 字典序", () => {
+	const summary = {
+		w: W_ALPHA,
+		e: null,
+		rows: [
+			{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1, rt: "" },
+			{ d: "2026-10-20", b: 0, calls: 5, in: 10, cr: 0, cw: 0, out: 1, rt: "z/z" },
+			{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1, rt: "b/b" },
+			{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1, rt: "a/a" },
+		],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-20" });
+	assert.deepEqual(result.routes.map((r) => r.rt), ["z/z", "a/a", "b/b", ""],
+		"calls 降序 → 同次数按 rt 字典序 → 空串显式排最后（空串在字典序里本是最前）");
+});
+
+test("AC-5 读取侧 / tka8-5c：epoch 的路由合计计入排行（折叠后不少行）", () => {
+	const bucketsRouteA = [];
+	const bucketsRouteB = [];
+	for (let i = 0; i < TOKSTATS_BUCKET_COUNT; i += 1) {
+		bucketsRouteA.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
+		bucketsRouteB.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
+	}
+	bucketsRouteA[0] = { calls: 2, in: 5000, cr: 0, cw: 0, out: 20 };
+	bucketsRouteB[1] = { calls: 1, in: 9000, cr: 0, cw: 0, out: 5 };
+	const summary = tokstatsSummaryOf({
+		w: W_ALPHA,
+		e: {
+			start: "2026-01-01",
+			end: "2026-09-21",
+			routes: [{ rt: "a/b", buckets: bucketsRouteA }, { rt: "c/d", buckets: bucketsRouteB }],
+		},
+		rows: [{ d: "2026-10-20", b: 0, calls: 3, in: 100, cr: 0, cw: 0, out: 1, rt: "a/b" }],
+	});
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" });
+	const byRoute = new Map(result.routes.map((r) => [r.rt, r.calls]));
+	assert.equal(byRoute.get("a/b"), 5, "epoch 的 2 次 + 窗口内明细的 3 次");
+	assert.equal(byRoute.get("c/d"), 1, "只存在于 epoch 里的路由不得丢行（R4）");
+	assert.equal(result.routes.reduce((acc, r) => acc + r.calls, 0), result.totals.calls);
+});
+
+test("排行行形状：与 workspaces 同形状（rt + 四桶 + calls），不含额外字段", () => {
+	const summary = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 1, cw: 2, out: 3, rt: "a/b" }] };
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-20" });
+	assert.deepEqual(Object.keys(result.routes[0]).sort(), ["calls", "cr", "cw", "in", "out", "rt"], "复用 client 的 tokstatsHit/tokstatsBilled 所需的字段");
 });
 
 

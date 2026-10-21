@@ -50,6 +50,8 @@ function panelPropsOf(rpc) {
 			"section.daily": "每日调用量",
 			"section.trend": "趋势（按周）",
 			"section.workspace": "工作区排行",
+			"section.route": "模型排行",
+			"route.unattributed": "未标注",
 			"workspace.all": "全部工作区",
 			"empty.noService": "统计服务不可用，无法读取会话数据",
 			"empty.noData": "暂无数据（还没有 usage 记录）",
@@ -78,6 +80,12 @@ function makeSummary(overrides = {}) {
 		workspaces: [
 			{ path: "D:\\proj\\alpha", calls: 3, in: 201000, out: 250, cr: 3000, cw: 0 },
 			{ path: "D:\\proj\\beta", calls: 1, in: 4096, out: 10, cr: 0, cw: 0 },
+		],
+		// 模型排行（第二批）：按 calls 降序，未标注（rt === ""）在最后。
+		routes: [
+			{ rt: "workbuddy/deepseek-v4.1-flash", calls: 2, in: 1000, cr: 3000, cw: 0, out: 200 },
+			{ rt: "deepseek-official/deepseek-v4-flash-vision-exp", calls: 1, in: 200000, cr: 0, cw: 0, out: 50 },
+			{ rt: "", calls: 1, in: 100, cr: 0, cw: 0, out: 5 },
 		],
 		totals: { calls: 3, in: 201000, cr: 3000, cw: 0, out: 250 },
 		windowStart: "2026-07-23",
@@ -459,19 +467,121 @@ test("页脚：显示生成时刻（固定 24 小时制）", async () => {
 	assert.match(textOf(foot), /生成于 \d{2}:\d{2}:\d{2}/, "固定 24 小时制 HH:MM:SS");
 });
 
-test("不渲染模型表与成本列（Q6 已删）", async () => {
+test("不渲染成本列（Q6 已删成本维度；模型排行是另一回事）", async () => {
 	const rpc = makeRpcStub();
 	rpc.respond(() => ({ ok: true, value: makeSummary() }));
 	const { react, main, t } = setupClient({ rpc });
 	const tree = await renderPanel(react, main, { t });
 	const text = textOf(tree);
-	assert.ok(!text.includes("按模型"), "无模型分区");
+	// 「按模型」这一条已随第二批删除：新卡的标题就是「模型排行」，两者必然冲突
+	// （tka8-7f 的裁决）。成本维度仍由下面三条 + guard 的 prices 拦截守住。
 	assert.ok(!text.includes("¥"), "无金额");
 	assert.ok(!text.includes("未配价"), "无未配价标注");
+	assert.ok(!text.includes("成本"), "无成本列");
 });
 
 
 
+
+
+// ── 模型排行卡（第二批 tka8-6/7） ───────────────────────────────────────────
+
+test("AC-13 / tka8-7a：排行卡渲染 rt 作为标签、占比条与次数", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const text = textOf(tree);
+	assert.ok(text.includes("模型排行"), "卡片标题");
+	assert.ok(text.includes("3 个"), "右上角显示路由数（extra.routes）");
+	// 标签是 host 拼好的整串，client 不拆（I1′）
+	assert.ok(text.includes("workbuddy/deepseek-v4.1-flash"), "rt 整串作为标签");
+	// 词边界正则（与既有柱状图用例同写法）：精确相等会漏掉带 `dsh-tokstats-dim`
+	// 的未标注行，纯 includes 又会命中 meterLabel / meterTrack 这些子元素。
+	const METER = /(?:^|\s)dsh-tokstats-meter(?:\s|$)/;
+	const meters = nodesOf(tree).filter((n) => typeof n.props.className === "string" && METER.test(n.props.className));
+	const routeMeters = meters.filter((n) => {
+		const text = textOf(n);
+		return text.includes("workbuddy/") || text.includes("deepseek-official/deepseek-v4-flash-vision-exp") || text.includes("未标注");
+	});
+	assert.equal(routeMeters.length, 3, "三条路由各一行（含未标注）");
+	// 2 / 4 = 50%
+	const fills = nodesOf(routeMeters[0]).filter((n) => n.props.className === "dsh-tokstats-meterFill");
+	assert.equal(fills[0].props.style.width, "50.0%", "占比 = calls / 各行次数之和");
+});
+
+test("AC-13 / tka8-7b：未标注行渲染 route.unattributed 文案并带 dim", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const dimMeters = nodesOf(tree).filter((n) => typeof n.props.className === "string"
+		&& n.props.className.includes("dsh-tokstats-meter")
+		&& n.props.className.includes("dsh-tokstats-dim"));
+	const labelled = dimMeters.map((n) => textOf(n));
+	const unattributed = labelled.find((text) => text.includes("未标注"));
+	assert.ok(unattributed !== undefined, "未标注行必须用词典文案（不是裸空串）");
+	assert.ok(!labelled.some((text) => text.startsWith(" 次")), "不得渲染成空标签");
+});
+
+test("AC-13：长 rt 标签整串保留在 DOM（截断交给 CSS ellipsis + tooltip）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const long = "deepseek-official/deepseek-v4-flash-vision-exp";
+	const meter = nodesOf(tree).find((n) => typeof n.props.className === "string"
+		&& n.props.className.includes("dsh-tokstats-meter")
+		&& textOf(n).includes(long));
+	assert.ok(meter !== undefined, "42 字符的 rt 必须原样渲染（Q14：不拆字符串）");
+	assert.ok(String(meter.props.title ?? "").includes(long), "完整 rt 进 tooltip");
+});
+
+test("旧 host 兼容：无 routes 字段时整卡不渲染、不抛错（I10 / 硬规则 6）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ routes: undefined }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.ok(!textOf(tree).includes("模型排行"), "无 routes 时不渲染空卡");
+	assert.ok(textOf(tree).includes("工作区排行"), "其余卡片照常");
+});
+
+test("旧 host 兼容：routes 为空数组时同样整卡不渲染", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ routes: [] }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.ok(!textOf(tree).includes("模型排行"));
+});
+
+test("AC-13 / tka8-6e：词典 7 个新键 zh/en 成对且值里不出现 provider / model 两词", () => {
+	// 值里不能出现这两个词：guard 的 DIMENSION_USE 会扫 client 产物，标题取
+	// 「模型排行 / Models」正是为了不与 `provider:` / `model:` 形态撞车（R6）。
+	const { dicts } = setupClient();
+	const pair = dicts[NS];
+	assert.ok(pair !== undefined, `${NS} 词典应已注册`);
+	const zh = pair.zh;
+	const en = pair.en;
+	const added = [
+		"section.route",
+		"extra.routes.one", "extra.routes.other",
+		"route.unattributed",
+		"cell.routeDetail",
+		"tip.route.one", "tip.route.other",
+	];
+	for (const key of added) {
+		assert.ok(Object.prototype.hasOwnProperty.call(zh, key), `zh 缺键 ${key}`);
+		assert.ok(Object.prototype.hasOwnProperty.call(en, key), `en 缺键 ${key}`);
+		assert.ok(!/\bprovider\b/i.test(zh[key]), `zh ${key} 不得出现 provider`);
+		assert.ok(!/\bmodel\b/i.test(zh[key]), `zh ${key} 不得出现 model`);
+		assert.ok(!/\bprovider\b/i.test(en[key]), `en ${key} 不得出现 provider`);
+		assert.ok(!/\bmodel\b/i.test(en[key]), `en ${key} 不得出现 model`);
+	}
+	assert.equal(zh["section.route"], "模型排行");
+	assert.equal(en["section.route"], "Models");
+	assert.equal(zh["route.unattributed"], "未标注");
+	assert.equal(en["route.unattributed"], "Unattributed");
+});
 
 
 // ── promptopt 计数器区块（AC-13） ──────────────────────────────────────────
