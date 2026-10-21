@@ -2,16 +2,17 @@
 
 > 状态：Active
 > 适用范围：整个仓库
-> 最后核验：2026-08-28
+> 最后核验：2026-10-21
 > 维护责任：修改仓库级约束的提交者
 
-本文件是维护者与 AI Agent 进入仓库的执行入口。使用者视角的安装与用法见 [README.md](./README.md)，维护流程与实现细节的详述见 [docs/MAINTAINING.md](./docs/MAINTAINING.md)——三者分工：本文件是**规则**，维护文档是**详述**，README 只讲使用者看得见的东西。
+本文件是维护者与 AI Agent 进入仓库的执行入口。使用者视角的安装与用法见 [README.md](./README.md)，维护流程与实现细节的详述见 [docs/MAINTAINING.md](./docs/MAINTAINING.md)，不变量编号的唯一定义源见 [docs/INVARIANTS.md](./docs/INVARIANTS.md)——四者分工：本文件是**规则**，维护文档是**详述**，不变量登记表是**证据指针**，README 只讲使用者看得见的东西。
 
 ## 优先级
 
 ```latex
 宿主兼容契约（UI slot / 投影字段，见 docs/MAINTAINING.md「插件的 host 侧行为与宿主契约」）
   > 本文件硬规则
+  > docs/INVARIANTS.md（PK-* / TP-* / TS-* / PO-* 的定义与证据指针）
   > docs/MAINTAINING.md（「新增插件」「多插件结构的四条硬约束」详述）
   > 本地 Active spec（docs/specs/active/，进行中变更的 SDD 四件套；本地不随仓库分发，完成验收后回填并归档）
   > 本地设计记录（docs/specs/archive/ 与 docs/debug/，仅历史证据，不随仓库分发，不约束当前实现）
@@ -25,11 +26,12 @@
 
 | 变更 | 必读材料 | 最低验证 |
 | --- | --- | --- |
-| `lib/client.js` 任意改动 | 本文件硬规则 + docs/MAINTAINING.md「插件的 host 侧行为与宿主契约」 | `npm test`（含 client 浅渲染断言）+ `node scripts/check-plugin-structure.js` + 重启 dsh web 目检 |
-| `lib/index.js`（host 半边，tokstats 聚合器） | 本文件硬规则 5 的 host 延伸（只用 `node:` 内建，npm 包 import 不可解析）+ 本地 SPEC-tokstats §3/§9 | `npm test`（host 管线断言）+ 重启 dsh web 目检四表 |
-| `test/`（测试套件） | 对应被测模块 + 现有用例 | `npm test` |
-| 新增插件 | docs/MAINTAINING.md「新增插件」五步；模式参考本地 SPEC-tokprev §11；含 UI 文案的还需本文件硬规则 7（词典 ns + `locale` 声明） | 同上 |
-| `cordis.patch.yml` | 本文件硬规则 1 / 3 | `node scripts/check-plugin-structure.js` |
+| `lib/client.js` 任意改动 | 本文件硬规则 + docs/MAINTAINING.md「插件的 host 侧行为与宿主契约」 + docs/INVARIANTS.md 的 PK-* / TP-* 行 | `npm test`（含 client 浅渲染断言）+ `node scripts/check-plugin-structure.js` + 重启 dsh web 目检 |
+| `lib/index.js`（host 半边） | 本文件硬规则 5 的 host 延伸 + docs/INVARIANTS.md 的 PK-05 / PK-08 / TS-* / PO-* 行 + docs/MAINTAINING.md「插件的 host 侧行为与宿主契约」 | `npm test`（host 管线断言）+ `node scripts/check-plugin-structure.js` + 重启 dsh web 目检四表 |
+| `test/`（测试套件） | 对应被测模块 + 现有用例 + docs/INVARIANTS.md 该不变量行的证据列 | `npm test` |
+| `docs/INVARIANTS.md` | 本文件硬规则 + 各条不变量当前证据形态 | `npm test` + `node scripts/check-plugin-structure.js`（证据指针不得指空） |
+| 新增插件 | docs/MAINTAINING.md「新增插件」五步 + docs/INVARIANTS.md 的 PK-* 行；含 UI 文案的还需本文件硬规则 7（词典 ns + `locale` 声明） | 同上 |
+| `cordis.patch.yml` | 本文件硬规则 1 / 3 + docs/INVARIANTS.md 的 PK-01 / PK-03 | `node scripts/check-plugin-structure.js` |
 | `package.json`（dsh 声明 / exports / files） | docs/MAINTAINING.md「发布到 GitHub」 | link 安装后重启目检 |
 | SDD 文档（`docs/specs/active/`） | 本地指南 §5.4 / §7.7–7.8 + 该变更的 SPEC | 状态头字段完整 + 交叉链接可达 |
 | 纯文档 / 图片 | — | 链接可达性检查 |
@@ -44,7 +46,7 @@
 6. **兼容面**：所有宿主数据读取路径必须保持优雅降级（拿不到数据渲染 null，不抛错）；
 7. **每插件自带词典，语言跟随宿主**：`PLUGINS` 条目带 `ns`（`dsh-plugins.<id>`，带包前缀防撞车——重复注册同 `(ns, locale)` 会抛）与 `dicts`（`{ zh, en }`，zh 为键集真源，en 必须逐键对应）；slot 注册声明 `locale: ns` 取得 `t` 席位；`locale` 是硬依赖（与官方 UI 包一致），宿主无 locale 服务时整包不加载。文案一律写成 `{name}` 占位符整句模板（英文语序独立），带计数的文案按 `.one` / `.other` 成对出键。非语言记号（K/M、桶区间、`¥`）与时间格式（固定 24 小时制）不进词典。
 
-规则 1 / 3 / 4 及 2 的 require 部分由 `scripts/check-plugin-structure.js` 自动检查（L1 静态证据）；规则 7 的 `ns` / `dicts` 字段同样由它静态校验（漏带即拦，无界面文案的插件显式写 `ns: null`），键集一致性由 `npm test` 的双向断言兜住（官方靠 TS 类型在编译期保证，我们没有构建步骤）。规则 5 / 6 及 7 的其余部分（整句模板、one/other 成对、记号不翻译）依赖评审。
+规则 1 / 3 / 4 及 2 的 require 部分由 `scripts/check-plugin-structure.js` 自动检查（L1 静态证据）；规则 7 的 `ns` / `dicts` 字段**及 `ns` 的值**（必须等于 `dsh-plugins.<插件键>`）同样由它静态校验（漏带、值不对、引用未声明都拦，无界面文案的插件显式写 `ns: null`），键集一致性由 `npm test` 的双向断言兜住（官方靠 TS 类型在编译期保证，我们没有构建步骤）；规则 5 的 host 延伸（`lib/index.js` 只许 `node:` 前缀 import）由它静态校验。规则 6 及 7 的其余部分（整句模板、one/other 成对、记号不翻译）依赖评审。逐条不变量与其证据指针见 [docs/INVARIANTS.md](./docs/INVARIANTS.md)。
 
 **词典术语对照**（只列直译容易走样的，其余按字面翻；同一概念出现多种措辞是最难查的回归——0.3.0 曾出现过 `X in · Y out` 与中文语序混用）：
 
@@ -154,3 +156,5 @@ git config commit.template scripts/git/commit-template.txt
 - 已执行验证（guard 命令输出 + 是否目检）
 - 未执行验证及原因
 - 剩余风险与回滚方式（通常为 `git revert` 单提交）
+
+**新增或修改不变量时**，另需报告：`docs/INVARIANTS.md` 里新增/改动了哪几行、证据列指向什么（guard 项 / 测试名）、以及是否做了**反向验证**（故意制造违规确认 guard 真能拦）。证据列只写「依赖评审」时必须说明为什么静态检查与测试都覆盖不到。

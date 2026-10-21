@@ -3,9 +3,9 @@
 > 状态：Active
 > 适用范围：本仓库的维护流程与插件实现细节
 > 维护责任：修改对应流程或契约的提交者
-> 最后核验：2026-09-10
+> 最后核验：2026-10-21
 
-本文件承载**维护者向**的内容。使用者视角的安装与用法见 [README](../README.md)，仓库级硬规则、变更路由与提交规范见 [AGENTS.md](../AGENTS.md)。三者分工：AGENTS.md 是**规则**，本文件是**详述**，README 只讲使用者看得见的东西。
+本文件承载**维护者向**的内容。使用者视角的安装与用法见 [README](../README.md)，仓库级硬规则、变更路由与提交规范见 [AGENTS.md](../AGENTS.md)，不变量编号的定义与证据指针见 [INVARIANTS.md](./INVARIANTS.md)。四者分工：AGENTS.md 是**规则**，本文件是**详述**，不变量登记表是**证据指针**，README 只讲使用者看得见的东西。
 
 ## 包结构（为什么是混合包）
 
@@ -22,7 +22,9 @@ git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # 必做：#vX.Y.Z 固定安�
 **打 tag 前的硬门槛**：link 安装目标提交 -> 重启 dsh web -> 刷新页面，目检**每个插件**的 UI 元素实际渲染。"启动无报错 ≠ 插件正常工作"——slot 注册是副作用，apply 提前返回或抛错都可能静默失效。目检不过不打 tag。
 
 推上去即可被安装，无需注册表。`files` 字段保证打包形态（git 安装 / npm 安装都走打包）只带运行必需件加文档：
-`lib/` + `cordis.patch.yml` + `AGENTS.md` / `CHANGELOG.md` / `docs/MAINTAINING.md`（README / LICENSE / package.json 由打包器自动附带，不必列）。
+`lib/` + `cordis.patch.yml` + `AGENTS.md` / `CHANGELOG.md` / `docs/MAINTAINING.md` / `docs/INVARIANTS.md`（README / LICENSE / package.json 由打包器自动附带，不必列）。
+
+**`docs/INVARIANTS.md` 必须进包**：AGENTS.md 的路由表指向它，包内若缺这份文件，装包者拿到的就是一张指空的必读清单。同理，AGENTS.md 里不得再引用 `docs/specs/`（本地 gitignored，不随包分发）——需要引证据时引 `docs/INVARIANTS.md` 的行号。
 
 `docs/assets/` 的四张截图**不进包**（1.1MB，看 GitHub 上的 README 就够）：包内 README 的文本链接可达，但效果图会裂。要连图一起带，把 `docs/assets` 加进 `files`。
 
@@ -119,7 +121,7 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
   - `optimize`：收 `{ text }` → 加内置 meta-prompt → `ctx.llm.stream` 收集完整输出 → 返回 `{ text, durationMs, noChange, usage? }`。`noChange` 由「产出与原文等价」判定，不是模型自报的标记；
   - `event`：收 `{ event: "adopted"|"dismissed", before?, after? }`，写计数器；
   - `counters`：读计数器。
-- **meta-prompt 是内容协议，不进词典**：五条约束见 `lib/index.js` 的 `PROMPTOPT_META_PROMPT`（禁新增事实 / 不确定保留原样 / 已够结构化则原样返回 / 跟随草稿语言 / 只返回结果）。改它要同步 `test/host-promptopt.test.mjs` 的文本断言——I11 靠那组断言把关。
+- **meta-prompt 是内容协议，不进词典**：五条约束见 `lib/index.js` 的 `PROMPTOPT_META_PROMPT`（禁新增事实 / 不确定保留原样 / 已够结构化则原样返回 / 跟随草稿语言 / 只返回结果）。改它要同步 `test/host-promptopt.test.mjs` 的文本断言——[PO-01](./INVARIANTS.md) 靠那组断言把关。
 - 错误只回机器码（`bad-request` / `model-unavailable` / `internal` / `cancelled`），由浏览器侧查词典渲染——host 侧没有 locale 服务，不拼人类可读文案；
 - 60s 双保险超时；浏览器 abort（关闭弹层）即中止这次调用；
 - **计数器落官方存储域**（域 `dsh_plugins_promptopt`、表 `counters`、单键 `totals`）：`spec` 是**手写**的，因为 `defineDomain` 在 npm 包里、硬规则 5 禁止 import。只提供设施真正读取的形状（`name` / `version` / `tables.<name>.valueSchema`，而 `valueSchema` 只要有个 `parse` 方法）。这是对官方内部契约的一处真实耦合——**DSH 升级后如果计数器整块消失，先查 `ctx.storageDomain.open()` 是否还接受这种 spec 形状**；
