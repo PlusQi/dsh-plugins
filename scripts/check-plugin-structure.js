@@ -4,9 +4,9 @@
  * 只读、零依赖、无环境要求。违规输出「不变量 + 位置 + 修复指引」。
  * 用法：node scripts/check-plugin-structure.js
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const problems = [];
@@ -201,6 +201,151 @@ for (const [i, line] of indexText.split("\n").entries()) {
 // 同一约束的代码形态兜底：即使换个词，读 header.config 也一样越界。
 if (/\bheader\s*\.\s*config\b/.test(indexText)) {
 	problems.push("lib/index.js: 出现 header.config 读取 —— 请求侧配置快照不得作为路由来源（I11）");
+}
+
+// ── CHANGELOG 版本段 ↔ 底部链接区一一对应（PK-11） ──
+//
+// 为什么需要这条静态检查：Keep a Changelog 的链接区是**手工维护**的，但它不属于
+// 「写变更段落」那一步，也不属于「改版本号」那一步。0.4.0–0.7.0 六次发布都写了段
+// 落，链接区却从 0.3.0 起再没动过——因为写段落与改版本被拆进了两个提交，没有任何
+// 一步会顺带想起它。这类「孤儿维护点」只能靠机器盯。
+//
+// 判据是双向的：
+//   · 每个 `## [X.Y.Z]` 段落必须有对应的 `[X.Y.Z]:` 链接行（否则该版本在底部无链接）；
+//   · 每个 `[X.Y.Z]:` 链接行必须有对应的段落（否则残留已删版本的悬空链接）。
+// `[Unreleased]` 单独查：它必须存在，且基线指向**最新已发布版本**——停在旧版本上
+// 时 GitHub 的 compare 会横跨多个版本，看起来像「一次发布了六个版本」。
+const changelogText = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+const sectionVersions = [];
+for (const [i, line] of changelogText.split(/\r?\n/).entries()) {
+	const m = line.match(/^##\s+\[(\d+\.\d+\.\d+)\]/);
+	if (m !== null) sectionVersions.push({ version: m[1], line: i + 1 });
+}
+const linkVersions = new Map();
+let unreleasedLine = null;
+let unreleasedBase = null;
+for (const [i, line] of changelogText.split(/\r?\n/).entries()) {
+	const link = line.match(/^\[(\d+\.\d+\.\d+)\]:\s*(\S+)/);
+	if (link !== null) { linkVersions.set(link[1], { url: link[2], line: i + 1 }); continue; }
+	const unrel = line.match(/^\[Unreleased\]:\s*(\S+)/);
+	if (unrel !== null) { unreleasedLine = i + 1; unreleasedBase = unrel[1]; }
+}
+
+for (const { version, line } of sectionVersions) {
+	if (!linkVersions.has(version)) {
+		problems.push(`CHANGELOG.md L${line}: 版本段 [${version}] 缺少底部链接行 —— 补 \`[${version}]: ...compare/v<前一版>...v${version}\`（PK-11）`);
+	}
+}
+const sectionSet = new Set(sectionVersions.map((s) => s.version));
+for (const [version, info] of linkVersions) {
+	if (!sectionSet.has(version)) {
+		problems.push(`CHANGELOG.md L${info.line}: 链接行 [${version}] 没有对应版本段 —— 悬空链接，版本段被删时链接要同步删（PK-11）`);
+	}
+}
+if (unreleasedLine === null) {
+	problems.push("CHANGELOG.md: 缺少 [Unreleased] 链接行 —— Keep a Changelog 要求它存在并指向最新已发布版本（PK-11）");
+} else if (sectionVersions.length > 0) {
+	// 段落在文件里是从新到旧排列的，第一段即最新发布版本。
+	const newest = sectionVersions[0].version;
+	const baseMatch = unreleasedBase === null ? null : unreleasedBase.match(/\.\.\.HEAD$/);
+	if (baseMatch === null) {
+		problems.push(`CHANGELOG.md L${unreleasedLine}: [Unreleased] 链接不以 \`...HEAD\` 结尾 —— 应形如 \`...compare/v${newest}...HEAD\`（PK-11）`);
+	} else if (!unreleasedBase.includes(`/v${newest}...HEAD`)) {
+		problems.push(`CHANGELOG.md L${unreleasedLine}: [Unreleased] 基线不是最新版本 v${newest}（当前 ${unreleasedBase}）—— 停在旧版本上会让 compare 横跨多个版本（PK-11）`);
+	}
+}
+
+// ── 链接行引用的 tag 必须真实存在（PK-11 第 4 条） ──
+//
+// 这一条是补链接区时**自己踩出来的**：把 0.7.0 / 0.7.1 写成版本段并补了 compare
+// 链接，但那两个版本按维护者裁决不打 tag，于是链接指向不存在的 ref——GitHub 上
+// 是硬 404，且不会随时间自愈（除非事后补 tag）。「段落与链接一一对应」查不出这种
+// 情况：段落和链接都在，只是它们指向的 ref 不存在。
+//
+// 读 tag 不走子进程（零依赖、无 git 二进制假设）：直接读 `refs/tags/` 与
+// `packed-refs`。两处陷阱都要处理：
+//   · 主仓库：`.git` 是目录，refs 就在其下；
+//   · worktree / 子模块：`.git` 是**文件**，内容是 `gitdir: <路径>`，而那路径是
+//     **该 worktree 私有的** git 目录（只放 HEAD、index 等），tag 等共享引用在它
+//     的 `commondir` 文件所指的主仓库 git 目录里——只读 gitdir 会一个 tag 都读不到，
+//     表现为「全部链接都指向不存在的 tag」的假报。
+function readLocalTags(gitDir) {
+	// 键统一为**不带 v 前缀**的版本号：比对侧的正则 `/v(\d+\.\d+\.\d+)/` 只捕获
+	// 数字部分，两边口径必须一致，否则每个 tag 都会被判成「不存在」。
+	const tags = new Set();
+	const add = (name) => {
+		const m = name.match(/^v?(\d+\.\d+\.\d+)$/);
+		if (m !== null) tags.add(m[1]);
+	};
+	let base;
+	try {
+		if (statSync(gitDir).isFile()) {
+			const pointer = readFileSync(gitDir, "utf8").match(/^gitdir:\s*(.+)$/m);
+			if (pointer === null) return null;
+			const gitdir = pointer[1].trim();
+			// worktree 的共享引用在主仓库；commondir 可能是相对 gitdir 的路径。
+			let common = gitdir;
+			try {
+				const rel = readFileSync(join(gitdir, "commondir"), "utf8").trim();
+				if (rel.length > 0) common = isAbsolute(rel) ? rel : join(gitdir, rel);
+			} catch { /* 非 worktree：gitdir 即主目录 */ }
+			base = common;
+		} else {
+			base = gitDir;
+		}
+	} catch {
+		return null;
+	}
+	try {
+		for (const name of readdirSync(join(base, "refs", "tags"))) add(name);
+	} catch { /* 无 loose tag，可能全在 packed-refs 里 */ }
+	try {
+		for (const line of readFileSync(join(base, "packed-refs"), "utf8").split(/\r?\n/)) {
+			const m = line.match(/^[0-9a-f]{40,64}\s+refs\/tags\/(\S+)$/);
+			if (m !== null) add(m[1]);
+		}
+	} catch { /* 无 packed-refs */ }
+	return tags;
+}
+
+const localTags = readLocalTags(join(root, ".git"));
+if (localTags === null) {
+	warnings.push("CHANGELOG.md: 读不到本地 tag 列表（.git 不可解析）—— 跳过「链接引用的 tag 是否存在」检查（PK-11 第 4 条未执行）");
+} else {
+	const linkLines = [
+		...(unreleasedLine === null ? [] : [{ name: "Unreleased", url: unreleasedBase, line: unreleasedLine }]),
+		...[...linkVersions.entries()].map(([version, info]) => ({ name: version, url: info.url, line: info.line })),
+	];
+	for (const { name, url, line } of linkLines) {
+		// compare/vA...vB 与 releases/tag/vX 都会出现 vX.Y.Z 形态的 ref
+		const refs = [...new Set([...url.matchAll(/v(\d+\.\d+\.\d+)/g)].map((m) => m[1]))];
+		const missing = refs.filter((ref) => !localTags.has(ref));
+		if (missing.length > 0) {
+			problems.push(`CHANGELOG.md L${line}: 链接 [${name}] 引用了不存在的 tag ${missing.map((r) => "v" + r).join(", ")} —— GitHub 上该链接是 404，且不会自愈。要么补打 tag，要么把未发布内容折回 [Unreleased] 段（PK-11）`);
+		}
+	}
+}
+
+// ── package.json 版本 ↔ CHANGELOG 最新已发布段（PK-12） ──
+//
+// CHANGELOG 开头自称「版本号对齐 `package.json`」，但此前没有任何检查兜它，于是
+// 出现过一个自相矛盾的状态：`package.json` 写着 0.7.1，CHANGELOG 最新段是
+// `[Unreleased]`（即最新**已发布**版本是 0.6.0），而 v0.7.1 这个 tag 并不存在。
+//
+// 语义：`package.json.version` 是「这个工作树自称的版本」，它必须等于最新**已发布**
+// 版本段（即第一个 `## [X.Y.Z]` 段）——未发布改动挂在 `[Unreleased]` 下，不抬版本号。
+// 打 tag 时两件事一起做：段落定版 + 抬版本号，这条检查因此天然对齐发布动作。
+const pkgVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+if (typeof pkgVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(pkgVersion)) {
+	problems.push(`package.json: version 不是 X.Y.Z 形态（当前 ${JSON.stringify(pkgVersion)}）（PK-12）`);
+} else if (sectionVersions.length === 0) {
+	problems.push("CHANGELOG.md: 找不到任何 `## [X.Y.Z]` 版本段 —— 无法核对 package.json 版本（PK-12）");
+} else {
+	// 段落在文件里从新到旧排列，第一段即最新已发布版本。
+	const newestPublished = sectionVersions[0].version;
+	if (newestPublished !== pkgVersion) {
+		problems.push(`package.json version 为 ${pkgVersion}，但 CHANGELOG 最新已发布版本段是 ${newestPublished} —— 二者必须一致；未发布改动挂 [Unreleased]，打 tag 时同时抬版本号并把段落定版（PK-12）`);
+	}
 }
 
 // ── 孤儿插件（注册但无 patch 行，缺 host 锚点）：提示不阻塞 ──

@@ -24,6 +24,8 @@
 | PK-08 | host 半边不写盘：持久化只经官方 `session-projection-cache`，本包不得写 `DSH_HOME/storages/` 下任何自有文件 | guard「I2 / AC-15：host 半边不得写盘」（写/改名/建目录调用） | L1 |
 | PK-09 | client 产物不持有成本维度：无 `prices` 字面量（成本维度已整体删除） | guard「I1：client 半边不得持有价格」；`test/client-tokstats.test.mjs`「client 产物无 prices 字面量」 | L1 + L2 |
 | PK-10 | client 不解释路由维度：`rt` 只作整串标签渲染，产物里不存在对 `provider` / `model` 的维度用法（属性访问 / 下标 / 键 / 拆分） | guard「DIMENSION_USE 四条正则」 | L1 |
+| PK-11 | `CHANGELOG.md` 的版本段与底部链接区**双向一一对应**：每个 `## [X.Y.Z]` 段落必须有 `[X.Y.Z]:` 链接行，每条链接行必须有对应段落（无悬空）；`[Unreleased]` 必须存在且基线指向**最新已发布版本**（`...compare/v<最新>...HEAD`）；链接里引用的每个 `vX.Y.Z` **必须是本地真实存在的 tag**（指向不存在的 tag 在 GitHub 上是硬 404 且不会自愈——未发布内容应挂在 `[Unreleased]` 段下，打 tag 时才改名为版本段） | guard「CHANGELOG 版本段 ↔ 底部链接区一一对应」（四条：段缺链接 / 链接悬空 / Unreleased 基线 / tag 存在性） | L1 |
+| PK-12 | `package.json` 的 `version` **等于 CHANGELOG 最新已发布版本段**（第一个 `## [X.Y.Z]`）。未发布的改动挂在 `[Unreleased]` 下、不抬版本号；打 tag 时同时抬版本号并把段落定版——这条检查让「版本号」与「已发布事实」无法各自漂移（此前出现过 `package.json` 0.7.1 / 最新已发布段 0.6.0 / `v0.7.1` tag 不存在三者并存） | guard「package.json 版本 ↔ CHANGELOG 最新已发布段」 | L1 |
 
 ## tokprev（TP）
 
