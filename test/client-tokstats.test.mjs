@@ -10,6 +10,7 @@ import {
 	injectedStyleTags,
 	nodesOf,
 	textOf,
+	rowNodesOf,
 	renderDeep,
 	renderWithEffects,
 	setupClientBase,
@@ -250,8 +251,15 @@ test("AC-9：趋势分区渲染周行（四列表：周起点 / 次数 / 输入 
 	const text = textOf(tree);
 	assert.ok(text.includes("趋势（按周）"), "趋势分区标题");
 	assert.ok(text.includes("10/19"), "周起点按 M/D 显示");
-	assert.ok(text.includes("201K"), "周行带输入合计");
-	assert.ok(text.includes("250"), "周行带输出合计");
+	// 周行的「输入」是 in+cr+cw = 204K，不是未缓存的 201K（TS-17）。
+	// 断言必须落在周行节点上：整树 includes 会被 KPI 的 hint「未缓存 201K」误命中，
+	// 那样即使周行退回未缓存口径也照样绿（正是本次要防的回归）。
+	const weekRow = rowNodesOf(tree).find((n) => textOf(n).startsWith("10/19"));
+	assert.ok(weekRow !== undefined, "周行应存在");
+	const cells = nodesOf(weekRow)
+		.filter((n) => n.props.className === "dsh-tokstats-cellNum")
+		.map((n) => textOf(n));
+	assert.deepEqual(cells, ["3", "204K", "250"], "次数 / 输入（计费口径）/ 输出");
 });
 
 test("AC-9：工作区切换器出现且含「全部工作区」与各项", async () => {
@@ -330,7 +338,7 @@ test("空数据：buckets 全零时显示「暂无数据」", async () => {
 
 // ── v0.7.0 统计面板：KPI / 每日柱 / 工作区排行 / 刷新 ────────────────────────
 
-test("KPI 四卡：调用次数 / 计费输入 / 输出 / 缓存命中率，数值来自 totals", async () => {
+test("KPI 四卡：调用次数 / 输入 / 输出 / 缓存命中率，数值来自 totals", async () => {
 	const rpc = makeRpcStub();
 	rpc.respond(() => ({ ok: true, value: makeSummary() }));
 	const { react, main, t } = setupClient({ rpc });
@@ -338,11 +346,74 @@ test("KPI 四卡：调用次数 / 计费输入 / 输出 / 缓存命中率，数�
 	const kpis = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-kpi");
 	assert.equal(kpis.length, 4, "四张指标卡");
 	const values = kpis.map((n) => textOf(n));
-	// totals: calls 3 / in 201000 / cr 3000 / cw 0 / out 250 → 计费输入 204K，命中率 1%
+	// totals: calls 3 / in 201000 / cr 3000 / cw 0 / out 250 → 输入 204K，命中率 1%
 	assert.ok(values[0].includes("3"), "调用次数");
-	assert.ok(values[1].includes("204K"), "计费输入 = in + cr + cw");
+	assert.ok(values[1].includes("204K"), "输入 = in + cr + cw");
 	assert.ok(values[2].includes("250"), "输出合计");
 	assert.ok(values[3].includes("1%"), "命中率 = cr / (in+cr+cw)");
+	// 面板不再有两个「输入」：卡名是「输入」，hint 拆未缓存 / 缓存读（TS-17）。
+	assert.ok(values[1].startsWith("输入204K"), `卡名应为「输入」，实际 ${values[1]}`);
+	assert.ok(!values[1].includes("计费输入"), "不再用「计费输入」这个名字");
+	assert.match(values[1], /未缓存 201K · 缓存读 3\.0K/, "hint 拆出未缓存与缓存读");
+});
+
+test("面板所有「输入」显示值统一为 in+cr+cw（KPI / 周行 / 日柱 tooltip / 工作区 / 模型排行）", async () => {
+	// 这条是 TS-17 的聚合断言：夹具四桶非零且互不相等，任何一处退回「只显示未缓存
+	// 输入」都会落到不同的数字上（201K vs 204K、1.0K vs 4.0K），因此能真正区分口径。
+	// 只断言某一处不够：本次缺陷正是「同一面板 8 处里 6 处漏了 cr/cw」。
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+
+	// 1) KPI 卡值 = totals 的 billed
+	const kpis = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-kpi");
+	assert.match(textOf(kpis[1]), /^输入204K/, "KPI 值 = billed(totals) = 204K");
+
+	// 2) 周行 = weekly 的 billed（201000 + 3000）
+	const weekRow = rowNodesOf(tree).find((n) => textOf(n).startsWith("10/19"));
+	const weekCells = nodesOf(weekRow)
+		.filter((n) => n.props.className === "dsh-tokstats-cellNum").map((n) => textOf(n));
+	assert.deepEqual(weekCells, ["3", "204K", "250"], "周行「输入」= billed(weekly)");
+
+	// 3) 日柱 tooltip = daily 各日的 billed（列聚合必须带 cr/cw）
+	const barTitles = nodesOf(tree)
+		.filter((n) => typeof n.props.className === "string" && /(?:^|\s)dsh-tokstats-bar(?:\s|$)/.test(n.props.className))
+		.map((n) => String(n.props.title ?? ""))
+		.filter((title) => title.length > 0);
+	assert.equal(barTitles.length, 2, "两天有数据 → 两根柱各有 tooltip");
+	assert.ok(barTitles[0].includes("输入 200K"), `10/19 的输入 = billed = 200K，实际 ${barTitles[0]}`);
+	assert.ok(barTitles[1].includes("输入 4.0K"), `10/20 的输入 = 1000+3000 = 4.0K，实际 ${barTitles[1]}`);
+	// 若列聚合漏了 cr（缺陷形态），10/20 会显示「输入 1.0K」——这一条专门钉住它。
+	assert.ok(!barTitles.some((title) => title.includes("输入 1.0K")), "日柱不得退回未缓存口径");
+
+	// 4) 工作区排行 detail 与 tooltip 同口径
+	const meters = nodesOf(tree).filter((n) => typeof n.props.className === "string"
+		&& /(?:^|\s)dsh-tokstats-meter(?:\s|$)/.test(n.props.className));
+	const meterByLabel = (label) => meters.find((n) => {
+		const el = nodesOf(n).find((c) => c.props.className === "dsh-tokstats-meterLabel");
+		return el !== undefined && textOf(el) === label;
+	});
+	const detailOf = (meter) => textOf(nodesOf(meter).find((c) => c.props.className === "dsh-tokstats-meterDetail"));
+	const alpha = meterByLabel("…\\proj\\alpha");
+	const beta = meterByLabel("…\\proj\\beta");
+	assert.match(detailOf(alpha), /^输入 204K · 输出 250/, "工作区 alpha = billed 204K");
+	assert.match(detailOf(beta), /^输入 4\.1K · 输出 10/, "工作区 beta = 4096 + 0 = 4.1K");
+	assert.ok(String(alpha.props.title).includes("输入 204K"), "工作区 tooltip 与 detail 同口径");
+	assert.ok(String(beta.props.title).includes("输入 4.1K"), "工作区 tooltip 与 detail 同口径");
+
+	// 5) 模型排行 detail 与 tooltip 同口径
+	const workbuddy = meterByLabel("workbuddy/deepseek-v4.1-flash");
+	const official = meterByLabel("deepseek-official/deepseek-v4-flash-vision-exp");
+	assert.match(detailOf(workbuddy), /^输入 4\.0K · 输出 200 · 命中 75%/, "workbuddy = 1000 + 3000 = 4.0K");
+	assert.match(detailOf(official), /^输入 200K · 输出 50 · 命中 0%/, "official = 200000 + 0 = 200K");
+	assert.ok(String(workbuddy.props.title).includes("输入 4.0K"), "模型排行 tooltip 与 detail 同口径");
+	assert.ok(String(official.props.title).includes("输入 200K"), "模型排行 tooltip 与 detail 同口径");
+
+	// 6) 反向：整棵树里不得出现未缓存口径被当成「输入」的旧值
+	const text = textOf(tree);
+	assert.ok(!/输入 201K/.test(text), "不得出现未缓存口径的「输入 201K」（缺陷形态）");
+	assert.ok(!/输入 1\.0K/.test(text), "不得出现未缓存口径的「输入 1.0K」（缺陷形态）");
 });
 
 test("KPI：窗口天数参与日均换算（近 90 天 → 3/90 ≈ 0.0）", async () => {
