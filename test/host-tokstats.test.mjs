@@ -227,6 +227,23 @@ test("聚合：窗口过滤 + 工作区分组 + 周趋势分组", () => {
 	assert.equal(result.workspaces[0].calls, 3);
 });
 
+test("聚合：同一根工作区的多个会话必须累加（不是后者覆盖前者）", () => {
+	// 回归：v0.6.0 的 workspaces.set() 会让同工作区的后一个会话整段覆盖前一个，
+	// 表现为「工作区行次数远小于总计」。
+	const one = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 100, cr: 0, cw: 0, out: 10 }] };
+	const two = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 3, in: 200, cr: 50, cw: 5, out: 20 }] };
+	const result = tokstatsAggregate([
+		{ rootWorkspace: W_ALPHA, summary: one },
+		{ rootWorkspace: W_ALPHA, summary: two },
+	], { windowDays: 90, today: "2026-10-20" });
+	assert.equal(result.workspaces.length, 1, "同一工作区只出一行");
+	assert.equal(result.workspaces[0].calls, 5, "2 + 3");
+	assert.equal(result.workspaces[0].in, 300);
+	assert.equal(result.workspaces[0].out, 30);
+	assert.equal(result.workspaces[0].calls, result.totals.calls, "只有一个工作区时它必须等于总计");
+	assert.equal(result.workspaces[0].in, result.totals.in, "输入合计也必须对齐总计");
+});
+
 test("聚合：workspace 过滤只留匹配的会话", () => {
 	const a = { w: "a", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] };
 	const b = { w: "b", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1 }] };
