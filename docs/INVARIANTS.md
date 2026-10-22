@@ -55,6 +55,8 @@
 | TS-15 | 排行排序写死且完全确定：`calls` 降序；空串「未标注」**显式排最后**（空串字典序最前，直接排会与界面直觉相反）；同次数按 `rt` 字典序 | `test/host-tokstats.test.mjs`「calls 降序；未标注显式排最后；同次数按 rt 字典序」 | L2 |
 | TS-16 | epoch 的合计**同时计入** `routes`（否则排行会随窗口推进悄悄少行） | `test/host-tokstats.test.mjs`「epoch 的路由合计计入排行（折叠后不少行）」 | L2 |
 | TS-17 | 面板所有「输入」显示值统一为 `in+cr+cw`（KPI / 周行 / 日柱 tooltip / 工作区排行 / 模型排行同口径；日柱列聚合必须累加 `cr` / `cw`，否则 tooltip 退回未缓存口径） | `test/client-tokstats.test.mjs`「面板所有「输入」显示值统一为 in+cr+cw（KPI / 周行 / 日柱 tooltip / 工作区 / 模型排行）」 | L2 |
+| TS-18 | 上下文桶边界固定为 `[8K, 32K, 128K, 256K, 512K]`（6 桶 `[0,8K)…[512K,∞)`），对齐市面按输入长度的计费档（32K / 128K / 256K 是中国区主力厂商的重叠边界，512K 是 MiniMax M3 的分界；4K/8K/16K 无人设档）。**最高桶不设 1M 上界**：1M 已是市面所有模型上下文窗口的最大值，单请求 prompt 结构上超不过它，再切 `[1M,∞)` 只是恒空格子。**改边界必须同批抬 `stateVersion`**：缓存里的 cell 只存桶序号 `b` 不存区间，边界一变同一 `b` 指向不同区间，不抬版本会静默错位。证据是**把边界数组与版本号钉在同一条断言里**的用例——改任一半都必须显式改另一半 | `test/host-tokstats.test.mjs`「桶边界：对齐市面计费档，且与 stateVersion 同批变更」；`test/client-tokstats.test.mjs`「桶标签与 host 侧边界逐项对齐」 | L2 |
+| TS-19 | 已结束会话的官方检查点可能**远早于日志末尾**，采信它会少报用量。补偿是**逐会话惰性基线**：某会话首次汇总时冷读一次、把**本次读到的 events 最大 seq** 记进进程内记忆；之后读缓存时若 `cachedSnapshot().asOfSeq` 低于该基线，就判定滞后并冷读覆盖。**基线不能取 `coldSnapshot().asOfSeq`**——实测 v0 格式会话它返回旧检查点水位（如 1126）而非日志末尾（148654），取它会让判定永不成立。`config.verifyStale: false` 可整块关闭（面板秒开，代价是采信滞后检查点） | `test/host-tokstats.test.mjs`「TS-19：冷读后若缓存水位低于已见日志末序号，下一次汇总改为冷读覆盖」「TS-19：缓存水位追平…仍走零 I/O」「TS-19：verifyStale=false…」 | L2 |
 
 ## promptopt（PO）
 

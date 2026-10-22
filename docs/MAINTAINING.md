@@ -70,7 +70,7 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
 
 架构：**注册一个 per-session 投影单元**，持久化与冷启动交给官方管线，本插件不写任何自有文件。
 
-- **单元**：`key: "dsh-plugins.tokstats"`、`stateVersion: 3`、`state: { w, seed, epoch, rows, last }`。宿主 `ctx.sessionProjections` 在每个已提交事件上驱动 `apply`；`init(header, inheritedEventCount)` 记下 `w`（会话自身 cwd）与 `seed`（fork 继承前缀长度）。
+- **单元**：`key: "dsh-plugins.tokstats"`、`stateVersion: 6`、`state: { w, seed, epoch, rows, last }`。宿主 `ctx.sessionProjections` 在每个已提交事件上驱动 `apply`；`init(header, inheritedEventCount)` 记下 `w`（会话自身 cwd）与 `seed`（fork 继承前缀长度）。
   - **key 带包前缀**：v0.7.0 由 `"tokstats"` 改名，消除与宿主日后注册同名单元的撞车风险（撞车时注册抛错、`startTokstats` catch 后静默退回冷折叠，属极难排查的降级）。宿主对 key 的字符集**零限制**，且 key 只进缓存文件内的字段名、不进文件路径。
   - **旧 key 残留**：官方缓存从不在 `session/disposed` 删记录，改名后旧的 `tokstats` 行留在 `<id>.json` 里不再被读取（每会话数百字节），本版不处理。
 - **必须带 `wire`**：只有带 wire 块的单元才出现在 `snapshot` / `cachedSnapshot` / `viewCheckpoint` / `restore` 的公开读取面上（host-only 单元被全部跳过）。`wire.view` 只返回 `{ w, e, rows }`——浏览器侧拿不到跨会话聚合；路由以单个**不透明字符串** `rt` 随 cell 自然带出。
@@ -78,14 +78,15 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
   - `rt = provider + "/" + model`，由 host 侧拼合并解释；client 把它当整串标签渲染，**不拆、不按 provider/model 做维度用法**（guard 的 `DIMENSION_USE` 四条正则仍在扫 client 产物）。
   - **`rt` 唯一来源**是 `assistant/message` 的 `message.source`（实测带 usage 的 message 100% 齐备）。**刻意不读请求侧事件**：那是请求侧配置快照（带 initial / change / series / resume 四种 reason），与 usage 的结算语义不同源，混用会让「路由」与「用量」来自两条独立路径、数字再也无法对账。guard 静态项会拦 `request/header` 字面量（含注释行）与 `header.config` 读取。
   - **空串 `""` 是「未标注」的唯一表示**（不引入 `null`：JSON 往返与 Map 键都要额外分支，空串天然可排序）。唯一现实来源是「只有 usage chunk、没有同 step 的 message 终值」的步（实测 0.18%），它们仍计入 `calls`。
-- **折叠语义**：计费输入 = `in + cr + cw` 落 2 的幂桶；`seq < seed` 的样本跳过（fork 前缀父会话已计过）；同 `(turn, step)` 的后一样本替换前一样本（差值法：先减旧再加新，**按 `(d, b, rt)` 定位**——旧采样与新采样可能落在不同路由，跨桶跨路由都正确）；无关事件返回同一引用（`Object.is` 成立）。
-- **E1 折叠**：窗口（`config.windowDays`，缺省 90）之外的明细按「桶 × 路由」加进 `epoch.routes: [{ rt, buckets[7] }]`，`rows` 本体不删不改；读取期按 `[epoch.start, epoch.end)` 排除明细并改计 epoch 合计，因此「折叠前后明细条数不变、各桶数字逐项一致、逐路由合计一致」三条同时成立。
+- **折叠语义**：计费输入 = `in + cr + cw` 落**市面计费档 6 桶**（边界 `[8K, 32K, 128K, 256K, 512K]`，标签 `[0,8K)`…`[512K,∞)`；对齐厂商「按输入长度分档」的真实档位，**不是 2 的幂**）；`seq < seed` 的样本跳过（fork 前缀父会话已计过）；同 `(turn, step)` 的后一样本替换前一样本（差值法：先减旧再加新，**按 `(d, b, rt)` 定位**——旧采样与新采样可能落在不同路由，跨桶跨路由都正确）；无关事件返回同一引用（`Object.is` 成立）。
+  - **桶边界与 `stateVersion` 必须同批变更（TS-18）**：cell 只存桶序号 `b`、不存区间，边界一变同一个 `b` 就指向另一个区间，只改边界不抬版本是**静默错位**而不是报错。边界数组（`TOKSTATS_BUCKET_BOUNDS`）与版本号钉在同一条测试断言里，改任一半都必须显式改另一半。
+- **E1 折叠**：窗口（`config.windowDays`，缺省 90）之外的明细按「桶 × 路由」加进 `epoch.routes: [{ rt, buckets[6] }]`，`rows` 本体不删不改；读取期按 `[epoch.start, epoch.end)` 排除明细并改计 epoch 合计，因此「折叠前后明细条数不变、各桶数字逐项一致、逐路由合计一致」三条同时成立。
   - **内层字段名是 `buckets`**（沿用旧结构同名），外层是 `routes`。
   - **旧结构防御**：读到无 `routes` 但有 `buckets` 的 epoch 时，视为单一路由 `""` 的一组桶（`stateVersion` 抬升后旧缓存行本就会被丢弃，但 `tokstatsSummaryOf` 对 `e` 只校验 start/end，兜底成本极低）。
 - **汇总**：面板打开时经 RPC 现算。逐会话先 `cachedSnapshot(meta, ["dsh-plugins.tokstats"])`（零 I/O），取不到才 `readSession` + `coldSnapshot` 冷折叠兜底。**活会话（`record.live === true`）跳过缓存**直接冷读——官方检查点可能滞后于日志且其 `asOfSeq` 无法与调用方稍后打开的日志关联（实测踩到 fork 会话少报 80%）。根工作区在汇总侧按 `listSessions()` 的 header 链解析（`init` 拿不到 headersById）。
 - **汇总输出形状**（RPC `summary` 端点返回值，面板唯一消费面）：
   ```
-  { buckets[7], daily[], weekly[], routes[], workspaces[], totals, windowStart, windowDays, generatedAt, workspace? }
+  { buckets[6], daily[], weekly[], routes[], workspaces[], totals, windowStart, windowDays, generatedAt, workspace? }
   totals / 每个 daily 行 / 每个 route 行 / 每个 workspace 行：{ calls, in, cr, cw, out }
   route 行额外带 rt；未标注行的 rt 是空串
   ```
@@ -93,8 +94,12 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
   - `workspaces` 与 `routes` 都按各自键**累加**合并（同工作区多会话是常态：fork 与并行对话；同 rt 也可能出现在多个会话）。v0.6.0 曾在 `workspaces` 上用 `set()` 覆盖，后一个会话整段盖掉前一个；v0.7.0 修。`routes` 是同一形状的同一个坑，实现时直接按累加写。
   - `routes` 排序写死两步：`calls` 降序；空串「未标注」**显式排最后**（空串在字典序里最前，直接按 `rt` 排会与界面直觉相反）；其余同次数时按 `rt` 字典序，保证输出完全确定。**epoch 的合计同时计入 `routes`**，否则排行会随窗口推进悄悄少行。
   - `daily` 的 `day` 是 host 本地自然日键；epoch 合计用区间末前一天当代表日（与既有周归并口径一致，只影响桶分布/趋势的落点，不影响排行）。
-- **版本作废**：抬 `stateVersion` 即让旧缓存行被 `row.ver !== def.stateVersion` 丢弃，不需要写迁移。本次（2 → 3）抬版本的原因是 **cell 形状与 epoch 形状都变了**；反例：仅给聚合输出加字段（如 v0.7.0 加 `daily`）**不需要**抬——那是聚合期派生、不进投影状态。
-- **冷折叠耗时实测**（2026-10-21，本机 42 会话 / 24.1 MB 压缩日志）：清掉本插件缓存行后，从点开面板到出现首行数据 **6.7 s**；缓存建好后再次打开 **125 ms**；单次 `summary` RPC **26–31 ms**。冷折叠是一次性代价，`stateVersion` 变更的直接后果。**注意聚合数字会受检查点影响**：已结束会话走 `cachedSnapshot`（可能滞后于日志），活会话才冷读——实测同一时刻面板显示 2674 次而全量日志折叠是 2771 次，差额全部来自检查点滞后，不是归因缺陷。
+- **版本作废**：抬 `stateVersion` 即让旧缓存行被 `row.ver !== def.stateVersion` 丢弃，不需要写迁移。本次（3 → 6）抬版本的原因是 **桶边界改了三轮、同一个桶序号 `b` 会指向另一个区间**（TS-18）；上一次（2 → 3）是 cell 形状与 epoch 形状都变了。反例：仅给聚合输出加字段（如 v0.7.0 加 `daily`）**不需要**抬——那是聚合期派生、不进投影状态。
+- **检查点滞后补偿（TS-19）**：已结束会话走 `cachedSnapshot` 时可能采信**远早于日志末尾**的检查点，实测本机 50 会话里 11 个滞后（最严重缓存 `seq=793` 而日志末序号 162925），面板少报 4.4% 调用 / 4.6% 计费输入。补偿是**逐会话惰性基线**：某会话首次汇总时冷读一次、把**本次读到的 events 最大 seq** 记进进程内记忆（`observedSeq`）；之后读缓存时若 `cachedSnapshot().asOfSeq` 低于基线，就判定滞后并冷读覆盖。
+  - **基线不能取 `coldSnapshot().asOfSeq`**：实测 v0 格式会话它返回旧检查点水位（如 1126）而非日志末尾（148654），取它会让判定永不成立（`1126 < 1126` 为 false），冷读算出的正确结果被下一轮旧缓存覆盖。这是本次排查踩到的真实坑。
+  - **代价**：进程启动后**首次汇总要全量冷读一次**（本机 50 会话 7.9 s），之后同进程内保持零 I/O。`config.verifyStale: false` 可整块关闭，退回「只按 live 判定」（面板秒开，采信滞后检查点）。
+  - **已知未解**：7 个 v0 格式会话的 `readSession` 只返回旧检查点之前的事件（缓存 `seq` 与日志 `maxPlain` 比值 0.5%–1.5%），冷读也拿不到后续事件。这是宿主侧格式迁移的截断行为，插件无法绕过；表现是这些会话的用量仍偏低（`ark-codingplan/glm-5.3` 少 115 次）。若日后宿主修复，本机制自动受益，无需改插件。
+- **冷折叠耗时实测**（2026-10-21，本机 42 会话 / 24.1 MB 压缩日志）：清掉本插件缓存行后，从点开面板到出现首行数据 **6.7 s**；缓存建好后再次打开 **125 ms**；单次 `summary` RPC **26–31 ms**。冷折叠是一次性代价，`stateVersion` 变更的直接后果。**本次 3 → 6 升级后按同一口径复测**（清空 50 个会话文件的 tokstats 缓存行 → 点开面板 → 轮询到首行数值）：**8.3 s**，缓存建好后切窗口 **105 ms**——会话数由 42 增到 50，耗时同比放大，仍是一次性代价。**注意聚合数字会受检查点影响**：已结束会话走 `cachedSnapshot`（可能滞后于日志），活会话才冷读——实测同一时刻面板显示 2674 次而全量日志折叠是 2771 次，差额全部来自检查点滞后，不是归因缺陷。TS-19 落地后这个差额已由滞后补偿处理。
 - **不改的东西**：RPC 通道名 `/dsh-plugins.tokstats` 与端点名 `summary` 是浏览器侧契约，与投影单元 key 是两件独立的事，key 改名时通道名不动。
 
 > **改 host 半边必须重启宿主进程（踩过的坑，2026-10-21）**
