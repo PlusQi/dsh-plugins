@@ -96,9 +96,10 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
   route 行额外带 rt；未标注行的 rt 是空串
   ```
   - **`coverage` 与 `epoch` 是本变更新增的两个纯增量字段**（TS-21 / TS-22），语义分别是「这次请求的覆盖率」与「本次聚合是否把折叠历史并入了某个代表日」：
-    - `coverage.sessions = entries.length`（每个通过 `header.id` 校验的会话），`coverage.skipped` = 其中 `summary === undefined` 的条数（日志读不出来）。恒等约束：`sessions - skipped` 必须等于实际贡献了数字的会话数。
+    - `coverage.sessions` = 通过 `header.id` 校验**且通过 workspace 过滤**的会话数；`coverage.skipped` = 其中 `summary === undefined` 的条数（日志读不出来）。两条恒等约束：`sessions - skipped` 必须等于实际贡献了数字的会话数；**分母与分子同源**——切到单个工作区时别的工作区的会话不进分母，否则页脚会写「已统计 50 个」而数字只来自 2 个。
     - `coverage.priced` **刻意不存在**：PK-09 禁止成本维度，这里显式记一笔防止日后误加。
-    - `epoch` 无折叠历史时**必须是 `null`**（不是 `{}`、不是 `undefined`）——client 用 `!== null` 判定，形状模棱两可会让 client 走进「有折叠」分支去读 `end`。`end` 是 epoch 区间的末端，代表日由 client 算 `end - 1`（与 host 的 `tokstatsDayBefore` 同口径）；`calls` 是所有经 epoch 路径计入的调用数，只用于 tooltip 说明。
+    - `epoch` 无折叠历史被计入时**必须是 `null`**（不是 `{}`、不是 `undefined`）——client 用 `!== null` 判定，形状模棱两可会让 client 走进「有折叠」分支去读 `end`。`end` 是 epoch 区间的末端，代表日由 client 算 `end - 1`（与 host 的 `tokstatsDayBefore` 同口径）；`calls` 是所有经 epoch 路径计入的调用数，只用于 tooltip 说明。
+    - **`epoch` 有三个「不报」的边角**，都是打标会指错列的形态：代表日落在窗口外（切到「近 7 天」时最常见）、epoch 各格全零（那列可能压根不存在）、以及只读到 epoch 结构但没有非零格被计入。多个会话各有不同 `epoch.end` 时取**最早**的代表日、`calls` 求和（PLAN §3.3：区间端点互不重叠，取最小保证是真实的合成日）。
     - **两个字段都不进投影状态**（不在 `state` / `wire.view` 里），因此**不抬 `stateVersion`、不需要清缓存**——这正是 TS-03 举的反例：只给聚合输出加字段不需要抬版本。`wire.view` 键集仍必须是 `w` / `e` / `rows`，那条既有断言若变红说明字段被误塞进状态。
     - 旧 host 消费方（读不到这两个字段）不受影响：纯增量、可缺省，client 走 `undefined` 分支（与 `routes` / `daily` 同一手法）；新 client + 旧 host 时整句不渲染、不打标、不抛错。
   - `daily` 是**时间维度的唯一真源**：`weekly` 由它按自然周（周一）归并，不再独立遍历明细——两趟各自过滤 epoch 与窗口时，任一处漏条件都会让「周合计 ≠ 日合计」只能靠人工对账发现。现在周合计之和恒等于 `totals`。

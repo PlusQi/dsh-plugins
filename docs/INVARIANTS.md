@@ -6,7 +6,7 @@
 > 维护责任：修改对应不变量的提交者
 > 证据下限：每条必须写明「证据」列；`L0` = 仅文档/评审，`L1` = 静态检查，`L2` = 可执行断言
 >
-> **先登记后实现**：本变更新增的 TS-21 / TS-22 / TS-23 按其批次逐步落地，落地前证据列写「待落地」并列出预定用例名——**不得**在用例还不存在时把证据写成 L2。落地那批必须回来更新本表。
+> **先登记后实现**：本变更新增的 TS-21 / TS-22 / TS-23 按其批次逐步落地，落地前证据列写「待落地」并列出预定用例名——**不得**在用例还不存在时把证据写成 L2。落地那批必须回来更新本表。当前进度：TS-21 / TS-22 的 **host 载荷已落地（第一批）**，client 侧待第二批；TS-23 待第三批。
 
 本文件是 `I*` / `AC-*` 编号的**唯一定义源**。代码、测试与 guard 的注释里出现的 ID 都在这里查定义——此前这些编号只存在于本地 SDD 文档（`docs/specs/`，不随仓库分发），导致同一编号在不同文档里有两套含义（见文末「历史编号映射」）。
 
@@ -60,8 +60,8 @@
 | TS-18 | 上下文桶边界固定为 `[8K, 32K, 128K, 256K, 512K]`（6 桶 `[0,8K)…[512K,∞)`），对齐市面按输入长度的计费档（32K / 128K / 256K 是中国区主力厂商的重叠边界，512K 是 MiniMax M3 的分界；4K/8K/16K 无人设档）。**最高桶不设 1M 上界**：1M 已是市面所有模型上下文窗口的最大值，单请求 prompt 结构上超不过它，再切 `[1M,∞)` 只是恒空格子。**改边界必须同批抬 `stateVersion`**：缓存里的 cell 只存桶序号 `b` 不存区间，边界一变同一 `b` 指向不同区间，不抬版本会静默错位。证据是**把边界数组与版本号钉在同一条断言里**的用例——改任一半都必须显式改另一半 | `test/host-tokstats.test.mjs`「桶边界：对齐市面计费档，且与 stateVersion 同批变更」；`test/client-tokstats.test.mjs`「桶标签与 host 侧边界逐项对齐」 | L2 |
 | TS-19 | 已结束会话的官方检查点可能**远早于日志末尾**，采信它会少报用量。补偿是**逐会话惰性基线**：某会话首次汇总时冷读一次、把**本次读到的 events 最大 seq** 记进进程内记忆；之后读缓存时若 `cachedSnapshot().asOfSeq` 低于该基线，就判定滞后并冷读覆盖。**基线不能取 `coldSnapshot().asOfSeq`**——实测 v0 格式会话它返回旧检查点水位（如 1126）而非日志末尾（148654），取它会让判定永不成立。`config.verifyStale: false` 可整块关闭（面板秒开，代价是采信滞后检查点） | `test/host-tokstats.test.mjs`「TS-19：冷读后若缓存水位低于已见日志末序号，下一次汇总改为冷读覆盖」「TS-19：缓存水位追平…仍走零 I/O」「TS-19：verifyStale=false…」 | L2 |
 | TS-20 | 时间档位固定四档「近 7 天 / 本月 / 近 30 天 / 全部」，缺省近 7 天；**四档共用 host 的 `windowDays` 一个入参**，「本月」由客户端折算成「当天日期数」（host 侧 `today - (windowDays - 1)` 因此落在当月 1 日），不引入第二种窗口口径。档位按 **id** 而非天数寻址选中态——「本月」在每月 7 号恰好也是 7 天，按天数寻址会让两个按钮同时高亮 | `test/client-tokstats.test.mjs`「时间档位：四个按钮…缺省选中近 7 天」「切换窗口：每个档位各发一次请求」；`test/host-tokstats.test.mjs`「TS-20：「本月」档的 windowDays 折算口径 = 当月 1 日」（跨模块钉住两条式子） | L2 |
-| TS-21 | `tokstatsAggregate` 返回值纯增量带 `coverage: { sessions, skipped }`（`sessions = entries.length`，`skipped` = `summary === undefined` 的条数），且**不进投影状态**——覆盖是「本次请求」的瞬时事实，进状态会制造 stale 语义。推论（见 TS-03）：**不需要抬 `stateVersion`、不需要清缓存**。恒等约束：`sessions - skipped` 必须等于实际贡献了数字的会话数。字段缺失（旧 host）时 client 整句不渲染，不得显示假零 | **尚未落地**（本变更第一批实现 host 载荷、第二批实现 client 展示）。预定证据：`test/host-tokstats.test.mjs`「coverage：三会话一失败 → sessions 3 / skipped 1」「coverage 与数字一致：被跳过的会话不贡献合计」「wire.view 键集仍只有 w / e / rows」（既有，不变红即证明未进状态）；`test/client-tokstats.test.mjs`「页脚覆盖率：skipped > 0 才出现「跳过」」「旧 host 无 coverage 时不渲染整句、不抛错」 | 待落地（预定 L2） |
-| TS-22 | `tokstatsAggregate` 返回值纯增量带 `epoch: { end, calls } \| null`；**无折叠历史时必须是 `null`**（不是 `{}`、不是 `undefined`），client 用 `!== null` 判定。代表日 = `end - 1`（与 host 的 `tokstatsDayBefore` 同口径），client 必须给该列打「折叠历史」标记并在 tooltip 写明区间末归并——**不得把它渲染成普通数据点**（那会显示一个不存在的用量尖峰）。`epoch` 非 `null` 而代表日不在当前列内时，同样不得凭空造标记 | **尚未落地**（本变更第一批 host 载荷、第二批 client 打标）。预定证据：`test/host-tokstats.test.mjs`「epoch：无折叠为 null，有折叠带 end 与 calls」「epoch 的 end 与读取期代表日同口径」；`test/client-tokstats.test.mjs`「epoch 标记：代表日列带折叠类名与 tooltip」「epoch 为 null 时无任何标记」 | 待落地（预定 L2） |
+| TS-21 | `tokstatsAggregate` 返回值纯增量带 `coverage: { sessions, skipped }`（`sessions` = 通过 `header.id` 校验且通过 workspace 过滤的会话数，`skipped` = 其中 `summary === undefined` 的条数），且**不进投影状态**——覆盖是「本次请求」的瞬时事实，进状态会制造 stale 语义。推论（见 TS-03）：**不需要抬 `stateVersion`、不需要清缓存**。两条恒等约束：`sessions - skipped` 等于实际贡献了数字的会话数；**分母与分子同源**（切到单个工作区时别的工作区的会话不进分母）。字段缺失（旧 host）时 client 整句不渲染，不得显示假零 | `test/host-tokstats.test.mjs`「TS-21 / AC-2：coverage 形状——三会话一失败 → sessions 3 / skipped 1」「TS-21 / AC-2：coverage 与数字一致——被跳过的会话不贡献任何合计」「TS-21：entries 为空时 coverage 返回 0 / 0，不是 undefined」「TS-21：coverage 分母跟随 workspace 过滤（分母与分子同源）」「TS-21 / TS-22 / TS-03：coverage 与 epoch 不进投影状态（wire.view 键集不变）」「TS-21 / TS-22：端点返回值里带 coverage 与 epoch（client 的唯一消费面）」 | L2 |
+| TS-22 | `tokstatsAggregate` 返回值纯增量带 `epoch: { end, calls } \| null`；**无折叠历史被计入时必须是 `null`**（不是 `{}`、不是 `undefined`），client 用 `!== null` 判定。代表日 = `end - 1`（与 host 的 `tokstatsDayBefore` 同口径），client 必须给该列打「折叠历史」标记并在 tooltip 写明区间末归并——**不得把它渲染成普通数据点**（那会显示一个不存在的用量尖峰）。三条边角：代表日落在窗口外时返回 `null`（否则打标指向不存在的列）；全零 epoch 不算「计入了折叠历史」；多会话各不同 epoch 时取**最早**代表日、`calls` 求和 | `test/host-tokstats.test.mjs`「TS-22 / AC-3：epoch 两态——无折叠为 null，有折叠带 end 与 calls」「TS-22：epoch 的 end 与读取期代表日同口径（代表日 = end - 1）」「TS-22：epoch 代表日落在窗口外时不得报 epoch（否则打标会指向不存在的列）」「TS-22：全零 epoch 不算「计入了折叠历史」」「TS-22：多个会话各有不同 epoch 时取最早的代表日（PLAN §3.3）」。**client 打标部分属第二批，尚未落地** | L2（host 载荷）+ 待落地（client 打标） |
 | TS-23 | 日柱图的可读性下限：绘图区至少 2 条水平网格线（用 `--dsw-alias-border-l1` 变量，不写死颜色）；左轴至少 2 个刻度值且以 `fmtTok` 格式化（K/M 记号不进词典）；**平方根刻度必须可被识别**（轴旁或 tooltip 有口径说明）——`Math.sqrt` 未声明时读者会按线性误读。柱宽有上限（`max-width`）以免列少时被 `flex` 拉爆；列多时按窗口压缩不受该上限影响 | **尚未落地**（本变更第三批）。预定证据：`test/client-tokstats.test.mjs`「日柱轴：3 个刻度 span 且最大刻度 = 峰值」「日柱网格线存在」「柱宽上限：3 列与 60 列都不溢出」「sqrt 刻度可识别」 | 待落地（预定 L2） |
 
 ## promptopt（PO）
@@ -134,6 +134,7 @@
 | PK-06 只有间接证据 | 「优雅降级」由各插件的降级断言分别覆盖，没有一条聚合断言；新增插件时不会自动获得覆盖 | 依赖评审 |
 | PO-02 的「不写会话日志」是 L0 | guard 只拦写盘调用，拦不住「经宿主 API 追加会话日志」这种形态（本包目前无此调用，靠评审） | 依赖评审 |
 | PK-07 的「整句模板 / one-other 成对」是 L0 | 键集一致性有自动断言，但「文案是否整句模板、记号是否误入词典」无法静态判定 | 依赖评审 |
-| **TS-21 / TS-22 / TS-23 尚未落地** | 三条是本变更（tokstats 可审计性）先登记的契约，实现分属第一批（host 载荷）、第二批（披露与打标）、第三批（图表可读性）。**登记先于实现**是本表的维护规则 1，但它们的证据列现在只有「预定用例名」——落地那批必须把用例真写出来并回来把「待落地」改成实际行号/测试名；否则这三行就是空壳 | 待落地（随批次收口） |
+| **TS-21 / TS-22 的 client 侧未落地** | 两条的 host 载荷已有 L2 证据（第一批）；「页脚渲染已统计 N 个会话 / skipped===0 不显示假零」「epoch 列打折叠标记」还需第二批的 client 实现与用例 | 待落地（第二批） |
+| TS-23 尚未落地 | 日柱网格线 / 刻度 / 柱宽上限 / sqrt 可识别属第三批；此刻证据列只有预定用例名 | 待落地（第三批） |
 | TS-17 的「KPI 副值语义」尚无断言 | 口径部分（`in+cr+cw`）有既有断言；「副值必须是对主值的拆分」目前只有文字约定，第三批补「四卡副值两两不等」后才有 L2 | 待落地（第三批） |
 | 宿主契约版本矩阵未建 | 本包压着 DSH `0.2.1-rc.2` 的 7 个深契约，升级后的重验清单目前是 `docs/MAINTAINING.md` 的散文 + README「支持的 dsh 版本」的三步，不是矩阵 | 待建（见 AGENTS.md「按变更范围读取」） |

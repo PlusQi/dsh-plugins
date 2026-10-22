@@ -70,6 +70,23 @@ function fold(events, { seed = 0, windowDays = 90, header = HEADER } = {}) {
 	return state;
 }
 
+/**
+ * 带折叠历史的摘要：`epoch.end` 给定、区间内 `calls` 次落在最低桶。
+ *
+ * 折叠历史的形状是「按路由分组的桶数组」（tks8-3a 起），这里只造一组 `rt: ""`
+ * 的最简形态——本次要测的是聚合层怎么把它转成 `epoch` 载荷，不是折叠算法本身
+ * （折叠算法由 E1 那一组用例覆盖）。
+ */
+function foldedSummary(epochEnd, calls, { rt = "" } = {}) {
+	const buckets = Array.from({ length: TOKSTATS_BUCKET_COUNT }, () => ({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 }));
+	buckets[0] = { calls, in: 1000, cr: 0, cw: 0, out: 10 };
+	return {
+		w: W_ALPHA,
+		e: { start: "2026-01-01", end: epochEnd, routes: [{ rt, buckets }] },
+		rows: [],
+	};
+}
+
 // ── 阶段 1：纯函数 ─────────────────────────────────────────────────────────
 
 test("I6 / AC-4：无关事件返回同一引用（Object.is 成立）", () => {
@@ -358,6 +375,18 @@ test("聚合：epoch 合计计入日序列（折叠前的历史仍能在柱状�
 	assert.equal(result.totals.calls, 3);
 });
 
+test("TS-21 / TS-22 / TS-03：coverage 与 epoch 不进投影状态（wire.view 键集不变）", () => {
+	// 这条是本变更**最容易被破坏**的边界：coverage / epoch 是 RPC 返回值里的瞬时
+	// 载荷，一旦有人把它们塞进 state 或 wire.view，就会变成 durable 数据（旧的覆盖率
+	// 在下次打开面板时被读回来 = stale 语义），且按 TS-03 必须同批抬 stateVersion
+	// 让旧缓存行作废。断言放在这两条不变量旁边，改动时最容易看见。
+	const def = tokstatsDefinition(90);
+	const state = fold([messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 5 })]);
+	assert.deepEqual(Object.keys(state).sort(), ["epoch", "last", "rows", "seed", "w"], "state 键集里没有 coverage");
+	const view = def.wire.view(state);
+	assert.deepEqual(Object.keys(view).sort(), ["e", "rows", "w"], "wire.view 键集仍只有 w / e / rows（插进去就要抬 stateVersion）");
+});
+
 test("聚合：同一根工作区的多个会话必须累加（不是后者覆盖前者）", () => {
 	// 回归：v0.6.0 的 workspaces.set() 会让同工作区的后一个会话整段覆盖前一个，
 	// 表现为「工作区排行各行的次数远小于总计」（v0.7.0 的排行条形图暴露）。
@@ -376,7 +405,132 @@ test("聚合：同一根工作区的多个会话必须累加（不是后者覆�
 	assert.equal(result.workspaces[0].calls, result.totals.calls, "只有一个工作区时它必须等于总计");
 });
 
-test("聚合：workspace 过滤只留匹配的会话", () => {	const a = { w: "a", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] };
+// ── 阶段 1b：可审计性载荷 coverage / epoch（本变更第一批；TS-21 / TS-22） ────
+// 为什么这批断言必须存在：`coverage` 与 `epoch` 是「数字算对了，但界面看不出少了
+// 什么」这个问题的唯一载荷。它们的失败模式都是**静默的**——skipped 少算一个，页脚
+// 只是写着「已统计 3 个」而实际只有 2 个贡献了数字；epoch 该 null 而不 null，日柱
+// 会给一个不存在的日子打上「折叠历史」标记。两种都只能靠断言抓。
+
+test("TS-21 / AC-2：coverage 形状——三会话一失败 → sessions 3 / skipped 1", () => {
+	const ok = (calls) => ({ w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls, in: 10, cr: 0, cw: 0, out: 1 }] });
+	const result = tokstatsAggregate([
+		{ rootWorkspace: W_ALPHA, summary: ok(1) },
+		{ rootWorkspace: W_ALPHA, summary: undefined }, // 日志读不出来
+		{ rootWorkspace: W_ALPHA, summary: ok(2) },
+	], { windowDays: 90, today: "2026-10-20" });
+	assert.deepEqual(result.coverage, { sessions: 3, skipped: 1 }, "sessions 含被跳过的那一个，skipped 单独计数");
+	// 恒等约束（PLAN §3.2 的硬约束）：sessions - skipped 必须等于实际贡献了数字的会话数。
+	assert.equal(result.coverage.sessions - result.coverage.skipped, 2, "3 - 1 = 2 个会话真正贡献了数字");
+});
+
+test("TS-21 / AC-2：coverage 与数字一致——被跳过的会话不贡献任何合计", () => {
+	// 反向验证「被跳过」确实没计入：如果实现把 skipped 的会话按空摘要折进去，
+	// 或把 sessions 当成「贡献数」，这条就会红。
+	const result = tokstatsAggregate([
+		{ rootWorkspace: W_ALPHA, summary: { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 100, cr: 0, cw: 0, out: 10 }] } },
+		{ rootWorkspace: W_ALPHA, summary: undefined },
+		{ rootWorkspace: W_ALPHA, summary: { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 3, in: 200, cr: 0, cw: 0, out: 20 }] } },
+	], { windowDays: 90, today: "2026-10-20" });
+	assert.equal(result.coverage.sessions, 3);
+	assert.equal(result.coverage.skipped, 1);
+	assert.equal(result.totals.calls, 5, "只含两个可读会话的量（2 + 3），不含被跳过者");
+	assert.equal(result.totals.in, 300);
+	assert.equal(result.workspaces.length, 1);
+	assert.equal(result.workspaces[0].calls, 5);
+});
+
+test("TS-21：entries 为空时 coverage 返回 0 / 0，不是 undefined", () => {
+	// 缺省值必须是「零」而不是「缺席」：client 用 `undefined` 判定旧 host，
+	// 新 host 在空数据下若返回 undefined，client 会误判成旧 host 而整句不渲染。
+	const result = tokstatsAggregate([], { windowDays: 90, today: "2026-10-20" });
+	assert.deepEqual(result.coverage, { sessions: 0, skipped: 0 });
+	assert.equal(result.epoch, null);
+});
+
+test("TS-21：coverage 分母跟随 workspace 过滤（分母与分子同源）", () => {
+	// 切到单个工作区时，别的工作区的会话不得算进分母——否则页脚写「已统计 3 个」
+	// 而数字只来自 1 个，正是本次变更要消除的那类谎报。
+	const a = { w: "a", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] };
+	const b = { w: "b", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1 }] };
+	const entries = [
+		{ rootWorkspace: "a", summary: undefined },
+		{ rootWorkspace: "b", summary: b },
+		{ rootWorkspace: "b", summary: b },
+	];
+	const all = tokstatsAggregate(entries, { windowDays: 90, today: "2026-10-20" });
+	assert.deepEqual(all.coverage, { sessions: 3, skipped: 1 }, "全量视图：三个会话、一个跳过");
+	const onlyB = tokstatsAggregate(entries, { windowDays: 90, today: "2026-10-20", workspace: "b" });
+	assert.deepEqual(onlyB.coverage, { sessions: 2, skipped: 0 }, "只统计 b 的两个会话，a 的失败会话不进分母");
+});
+
+test("TS-22 / AC-3：epoch 两态——无折叠为 null，有折叠带 end 与 calls", () => {
+	const flat = tokstatsAggregate([
+		{ rootWorkspace: W_ALPHA, summary: { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] } },
+	], { windowDays: 90, today: "2026-10-20" });
+	// 无折叠时必须**严格为 null**：client 用 `!== null` 判定，{} 或 undefined 都会让它
+	// 走进「有折叠」分支去读 end。
+	assert.equal(flat.epoch, null, "无折叠历史 → null（不是 {}、不是 undefined）");
+
+	const folded = tokstatsAggregate([
+		{ rootWorkspace: W_ALPHA, summary: foldedSummary("2026-08-21", 4) },
+	], { windowDays: 0, today: "2026-10-20" });
+	assert.notEqual(folded.epoch, null);
+	assert.equal(typeof folded.epoch.end, "string", "end 是日键字符串");
+	assert.ok(folded.epoch.calls > 0, "calls 是所有经 epoch 路径计入的调用数");
+	assert.equal(folded.epoch.calls, folded.totals.calls, "只有折叠历史时它等于总计");
+});
+
+test("TS-22：epoch 的 end 与读取期代表日同口径（代表日 = end - 1）", () => {
+	// 两面必须共用同一条式子：host 用 tokstatsDayBefore(epoch.end) 当落点，client 用
+	// end - 1 算打标列。两边各写一份时，一旦有一边改成「end 当天」就打不到那一列。
+	const summary = foldedSummary("2026-08-21", 3);
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" });
+	assert.equal(result.epoch.end, "2026-08-21");
+	const epochDay = result.daily.reduce((a, d) => (d.day < a ? d.day : a), result.daily[0].day);
+	assert.equal(epochDay, "2026-08-20", "折叠历史落在 end 的前一天");
+});
+
+test("TS-22：epoch 代表日落在窗口外时不得报 epoch（否则打标会指向不存在的列）", () => {
+	// 「近 7 天」视图里，折叠历史的代表日（8/20）早已在窗口外，日柱里没有那一列。
+	// 此时若仍返回 epoch，client 就会给一个不存在的日子打标（或凭空造一列）。
+	const summary = foldedSummary("2026-08-21", 3);
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 7, today: "2026-10-20" });
+	assert.equal(result.epoch, null, "没有折叠格真正计入本次窗口 → epoch 必须是 null");
+	assert.equal(result.totals.calls, 0, "窗口内确实没有数据");
+});
+
+test("TS-22：全零 epoch 不算「计入了折叠历史」", () => {
+	// epoch 结构存在但每一格都是 0：没有调用被计入，日柱那列可能压根不存在。
+	// 这种情况返回非 null 会让 client 给一个空列打标。
+	const summary = {
+		w: W_ALPHA,
+		e: {
+			start: "2026-01-01",
+			end: "2026-08-21",
+			routes: [{ rt: "", buckets: Array.from({ length: TOKSTATS_BUCKET_COUNT }, () => ({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 })) }],
+		},
+		rows: [],
+	};
+	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 0, today: "2026-10-20" });
+	assert.equal(result.epoch, null);
+	assert.equal(result.totals.calls, 0);
+});
+
+test("TS-22：多个会话各有不同 epoch 时取最早的代表日（PLAN §3.3）", () => {
+	// 区间端点互不重叠：不同会话的 epoch.end 不同 → 打标只针对单一代表日，取最小
+	// 保证那一定是真实的合成日；calls 是两者之和。
+	const early = foldedSummary("2026-08-21", 2);
+	const late = foldedSummary("2026-09-11", 3);
+	const result = tokstatsAggregate([
+		{ rootWorkspace: W_ALPHA, summary: early },
+		{ rootWorkspace: W_BETA, summary: late },
+	], { windowDays: 0, today: "2026-10-20" });
+	assert.equal(result.epoch.end, "2026-08-21", "取最早的代表日");
+	assert.equal(result.epoch.calls, 5, "2 + 3：所有经 epoch 路径计入的调用之和");
+});
+
+test("聚合：workspace 过滤只留匹配的会话", () => {
+	const a = { w: "a", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 10, cr: 0, cw: 0, out: 1 }] };
 	const b = { w: "b", e: null, rows: [{ d: "2026-10-20", b: 0, calls: 2, in: 10, cr: 0, cw: 0, out: 1 }] };
 	const all = tokstatsAggregate([
 		{ rootWorkspace: "a", summary: a },
@@ -626,13 +780,13 @@ test("AC-6 / I3：ver: 2 的旧缓存行被跳过，冷折叠重建成功且不�
 	assert.equal(result.value.routes[0].calls, 2);
 });
 
-test("聚合字段集：第二批起包含 routes（第一批的「无 routes」绊线在此解除）", () => {
+test("聚合字段集：第二批起含 routes，本变更（可审计性）起再含 coverage / epoch", () => {
 	const summary = { w: W_ALPHA, e: null, rows: [{ d: "2026-10-20", b: 0, calls: 1, in: 100, cr: 0, cw: 0, out: 1, rt: "a/b" }] };
 	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-20" });
 	assert.deepEqual(
 		Object.keys(result).sort(),
-		["buckets", "daily", "routes", "totals", "weekly", "windowStart", "workspaces"],
-		"第二批的聚合字段集 = 第一批 + routes（且没有第二个新字段）",
+		["buckets", "coverage", "daily", "epoch", "routes", "totals", "weekly", "windowStart", "workspaces"],
+		"聚合字段集 = 第二批的七项 + 本变更的 coverage / epoch；字段集是绊线，防的是「顺手又加一个没人消费的字段」",
 	);
 	assert.deepEqual(result.routes.map((r) => r.rt), ["a/b"]);
 });
@@ -1097,6 +1251,39 @@ test("单会话 readSession 失败：跳过该会话，其余正常（不抛错�
 	assert.equal(result.ok, true, "单会话失败不得让整次汇总失败");
 	assert.equal(result.value.totals.calls, 2, "另一会话仍被计入");
 	assert.ok(loggerWarns.some((line) => line.includes(HEADER.id)), "失败会话应有告警");
+});
+
+test("TS-21 / TS-22：端点返回值里带 coverage 与 epoch（client 的唯一消费面）", async () => {
+	// 纯函数断言只证明 tokstatsAggregate 产出这两个字段；而 client 拿到的是
+	// **RPC 端点的 value**。中间还有一层 `{ ...aggregate, generatedAt, windowDays }`
+	// 的展开——那一层若被改成挑字段返回（或以后加了白名单过滤），纯函数断言仍然
+	// 全绿而界面永远看不到覆盖率。所以这条必须在真实 apply 管线 + 端点调用上钉。
+	const connection = makeConnection();
+	const other = { id: "s-other", version: 4, createdAt: 2, cwd: W_BETA, isSeeded: false };
+	const cache = makeProjectionCache({});
+	const query = makeSessionQuery(
+		[{ header: HEADER }, { header: other }, { header: { id: "s-broken", version: 4, createdAt: 3, cwd: W_BETA } }],
+		{ [other.id]: sampleLog(other) }, // HEADER 与 s-broken 都无日志 → 两个会话被跳过
+	);
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, true);
+	// 端点值里必须有这两个字段，且形状正确。
+	assert.equal(typeof result.value.coverage, "object");
+	assert.equal(typeof result.value.coverage.sessions, "number");
+	assert.equal(typeof result.value.coverage.skipped, "number");
+	assert.equal(result.value.coverage.sessions, 3, "三个会话进了 entries");
+	assert.equal(result.value.coverage.skipped, 2, "两个读不出来");
+	// 端点值仍保留原有的字段（不能因为加了字段就把别人挤掉）。
+	assert.equal(typeof result.value.windowDays, "number");
+	assert.equal(typeof result.value.generatedAt, "number");
+	assert.ok(Array.isArray(result.value.buckets));
+	// 端点值里不得出现投影面字段：RPC 是聚合面，不是 wire 面。
+	assert.equal(result.value.rows, undefined);
+	assert.equal(result.value.w, undefined);
+	// 无折叠历史 → epoch 必须严格为 null（client 用 !== null 判定）。
+	assert.equal(result.value.epoch, null);
 });
 
 test("listSessions 抛错：端点返回错误信封而不是抛 500", async () => {
