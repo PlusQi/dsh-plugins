@@ -103,6 +103,14 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
     - **两个字段都不进投影状态**（不在 `state` / `wire.view` 里），因此**不抬 `stateVersion`、不需要清缓存**——这正是 TS-03 举的反例：只给聚合输出加字段不需要抬版本。`wire.view` 键集仍必须是 `w` / `e` / `rows`，那条既有断言若变红说明字段被误塞进状态。
     - 旧 host 消费方（读不到这两个字段）不受影响：纯增量、可缺省，client 走 `undefined` 分支（与 `routes` / `daily` 同一手法）；新 client + 旧 host 时整句不渲染、不打标、不抛错。
   - **client 侧消费（第二批）**：页脚渲染 `已统计 N 个会话`，`skipped > 0` 时追加 `· 跳过 M 个（日志不可读）`；`skipped === 0` **不渲染**那半句（不写「跳过 0 个」这种假零）。日柱里代表日落在该列区间的柱子带 `dsh-tokstats-barEpoch` 类（斜纹 + 次要底色）并在 tooltip 写明「含折叠历史（区间末归并）· N 次」。
+  - **日柱图的结构约定（第三批，TS-23）**：`.dsh-tokstats-chart` = 纵轴刻度列 `.dsh-tokstats-axisY`（定宽 44px、与绘图区同为 112px 高）+ `.dsh-tokstats-chartMain`（绘图区 `.dsh-tokstats-chartPlot` + 横轴 `.dsh-tokstats-axis`）。
+    - **纵轴刻度必须与绘图区同高、且不共用容器**：刻度按 `bottom:70.7%` 绝对定位，参照系是所在盒子的高度。若把横轴放进同一个盒子，刻度会以「绘图区 + 横轴」为基准而上移——柱顶刻度会漂到柱体中部。
+    - **刻度位置按平方根刻度算**：峰值在 `100%`、`峰值÷2` 在 `sqrt(0.5)=70.7%`、`0` 在 `0%`。等距三档（100/50/0）会让读者按线性读，而柱高是 `sqrt(calls/peak)`——两者对不上就是「轴在撒谎」。网格线 `.dsh-tokstats-gridLine` 与刻度共用同一组 bottom 值，**改一处必须改两处**。
+    - **柱宽上限 48px 必须配 `justify-content`**：`flex:1` 触顶后剩余空间不再分给柱体，容器不显式决定（`center`）就全部落在右侧，少列时看起来像图没画完。60 列时每列约 13–20px（实测「全部」档 58 列 / 18px），上限对密排无影响。
+    - **峰值柱顶标数值，其余柱只留 tooltip**：峰值标签 `.dsh-tokstats-barPeak` 绝对定位在柱顶上方（`bottom:calc(100% + 2px)`），不改变柱高。并列峰值只标第一根（`peakDayKey`），否则同屏出现两个同值标签。
+    - **窄窗（≤900px）隐藏中间刻度**：三行标签在 44px 轴列里会互相挤压，留首末两个仍能读出量级。
+    - **KPI 副值必须是对主值的拆分（TS-17）**：调用次数 = 日均；输入 = 未缓存 / 缓存读；输出 = **占输入的比例**（`tokstatsPct`，分母为 0 时破折号，不编 0%）；命中率 = **分子 / 分母**（`命中 X / 计费输入 Y`）。判据是「四卡副值两两不等」断言——只要有一条复述别的卡，它就红。
+    - 词典新增 10 个键（`foot.coverage` / `foot.skipped` / `tip.coverage` / `tip.coverageSkipped` / `tip.dayEpoch` 各 `.one`/`.other`）。**占位符名必须与 `tCount` 注入的一致**：`tCount` 只注入 `{count}`，模板里写 `{sessions}` 会原样显示花括号（本批真实踩到，已加「不得残留未替换占位符」断言）。第三批另加 `tip.dailyScale`（刻度口径说明）并改写 `kpi.outputHint` / `kpi.hitHint`。
     - **代表日由 client 也算一遍 `end - 1`**：与 host 的 `tokstatsDayBefore` 是同一条式子的两份实现（两个模块图没有共享常量）。改任一边都要改另一边，否则打标会落到错误的列上——host 侧有「end 与读取期代表日同口径」用例钉住自己的那半。
     - **判据是「代表日落在列区间内」而不是 `=== startDay`**：长窗口下列会被合并（跨度 > 1 天），只比首日在「全部 / 近 30 天」档必然漏标。
     - 词典新增 10 个键（`foot.coverage` / `foot.skipped` / `tip.coverage` / `tip.coverageSkipped` / `tip.dayEpoch` 各 `.one`/`.other`）。**占位符名必须与 `tCount` 注入的一致**：`tCount` 只注入 `{count}`，模板里写 `{sessions}` 会原样显示花括号（本批真实踩到，已加「不得残留未替换占位符」断言）。

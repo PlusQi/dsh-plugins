@@ -971,3 +971,249 @@ test("样式：折叠列用斜纹/次要底色，不写死颜色（TS-22）", ()
 	assert.ok(footRule !== null);
 	assert.match(footRule[1], /flex-wrap:wrap/, "页脚需 flex-wrap 防窄窗挤压");
 });
+
+// ── 第三条：日柱可读性与 KPI 副值语义（第三批；TS-23 / TS-17） ─────────────
+//
+// 这一组的失败模式是「图能看但读错」：没有刻度时读者只能看出形状、把平方根
+// 刻度当线性读；柱宽没有上限时少列被拉成色块，柱宽从此表达「窗口里有几天」
+// 而不是「量有多大」；KPI 副值若复述同一数字，四张卡只剩三份信息。
+
+/** 日柱绘图区节点（含网格线与刻度口径说明）。 */
+function plotOf(tree) {
+	return nodesOf(tree).find((n) => typeof n.props.className === "string"
+		&& /(?:^|\s)dsh-tokstats-chartPlot(?:\s|$)/.test(n.props.className));
+}
+
+/** 纵轴刻度节点（按出现顺序：峰值 / 峰值÷2 / 0）。 */
+function axisTicksOf(tree) {
+	return nodesOf(tree).filter((n) => typeof n.props.className === "string"
+		&& /(?:^|\s)dsh-tokstats-axisTick(?:\s|$)/.test(n.props.className));
+}
+
+test("TS-23 / AC-4：日柱左轴 3 个刻度值，且最大刻度 = 峰值、中间刻度 = 峰值÷2", async () => {
+	// 夹具峰值 = 2 次（10/19 两条）→ 刻度应为 "2" / "1" / "0"，全部走 fmtTok。
+	// 断言按**顺序取值**而不是「包含某数字」：后者在刻度算错量级时仍会绿
+	// （例如把 peak/2 写成 peak 的平方根近似值也含 "2"）。
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const ticks = axisTicksOf(tree);
+	assert.equal(ticks.length, 3, `应恰有 3 个刻度，实际 ${ticks.length}`);
+	assert.deepEqual(ticks.map((n) => textOf(n)), ["2", "1", "0"], "刻度值 = 峰值 / 峰值÷2 / 0");
+	// 刻度必须按**平方根刻度**定位：峰值÷2 的真实高度是 sqrt(0.5)≈70.7%，
+	// 不是 50%。把「2 / 1 / 0」等距摆开会让读者按线性读，与柱高对不上。
+	const topRule = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats").textContent
+		.match(/\.dsh-tokstats-axisTickTop\{([^}]*)\}/);
+	const midRule = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats").textContent
+		.match(/\.dsh-tokstats-axisTickMid\{([^}]*)\}/);
+	assert.ok(topRule !== null && midRule !== null, "刻度定位规则应存在");
+	assert.match(topRule[1], /bottom:100%/, "峰值刻度顶到绘图区顶部");
+	assert.match(midRule[1], /bottom:70\.7%/, "峰值÷2 刻度在 sqrt(0.5)=70.7% 处");
+});
+
+test("TS-23 / AC-4：刻度值为 K/M 记号时走 fmtTok（大数不显示原始数字）", async () => {
+	// 峰值 1286 次 → fmtTok → "1.3K"。这条钉住「刻度必须格式化」：
+	// 直接把 1286 写进 44px 宽的轴列会溢出并被裁掉。
+	const rpc = makeRpcStub();
+	const daily = [
+		{ day: "2026-10-19", calls: 1286, in: 100, cr: 0, cw: 0, out: 1 },
+		{ day: "2026-10-20", calls: 12, in: 100, cr: 0, cw: 0, out: 1 },
+	];
+	rpc.respond(() => ({ ok: true, value: makeSummary({ daily }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const ticks = axisTicksOf(tree).map((n) => textOf(n));
+	assert.equal(ticks[0], "1.3K", `峰值刻度应格式化为 1.3K，实际 ${ticks[0]}`);
+	assert.equal(ticks[1], "643", `峰值÷2 刻度应为 643，实际 ${ticks[1]}`);
+	assert.equal(ticks[2], "0");
+});
+
+test("TS-23：绘图区至少有 2 条水平网格线，且用主题变量（不写死颜色）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const lines = nodesOf(tree).filter((n) => typeof n.props.className === "string"
+		&& /(?:^|\s)dsh-tokstats-gridLine(?:\s|$)/.test(n.props.className));
+	assert.ok(lines.length >= 2, `至少 2 条网格线，实际 ${lines.length}`);
+	const plot = plotOf(tree);
+	assert.ok(plot !== undefined, "绘图区节点应存在");
+	assert.equal(lines.every((n) => nodesOf(plot).includes(n)), true, "网格线必须在绘图区内部（绝对定位的参照系）");
+
+	injectedStyleTags.length = 0;
+	setupClient();
+	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-plugins/tokstats").textContent;
+	const lineRule = css.match(/\.dsh-tokstats-gridLine\{([^}]*)\}/);
+	assert.ok(lineRule !== null, "网格线样式规则应存在");
+	assert.match(lineRule[1], /var\(--dsw-alias-border-l1\)/, "网格线用 --dsw-alias-border-l1，不写死颜色");
+	assert.ok(!/#[0-9a-fA-F]{3,6}\b/.test(lineRule[1]), "网格线规则不得出现写死的十六进制颜色");
+});
+
+test("TS-23 / AC-4：柱容器有列宽上限（3 列与 60 列都不溢出）、列少时居中", async () => {
+	injectedStyleTags.length = 0;
+	setupClient();
+	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-plugins/tokstats").textContent;
+	const barRule = css.match(/\.dsh-tokstats-bar\{([^}]*)\}/);
+	assert.ok(barRule !== null, "柱样式规则应存在");
+	assert.match(barRule[1], /max-width:48px/, "柱宽上限 48px（AC-4）");
+	const barsRule = css.match(/\.dsh-tokstats-bars\{([^}]*)\}/);
+	assert.ok(barsRule !== null, "柱容器规则应存在");
+	// 已知副作用：flex:1 + max-width 会让少列时整组挤在左侧。容器必须显式
+	// 决定余量落在哪里，否则「柱宽有上限」反而让图看起来像没画满。
+	assert.match(barsRule[1], /justify-content:center/, "少列时整组居中，不挤在左侧");
+
+	// 3 列与 60 列两种输入的 DOM 都不得溢出：柱位数量与柱宽上限是两件事，
+	// 这里断言「列多时不会被上限压成固定宽度」（上限只对 flex 有效，min-width
+	// 3px 保证 60 列仍能排下：60 × (3+2) = 300px < 800px 主区）。
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const three = await renderPanel(react, main, { t });
+	assert.equal(barNodesOf(three).length, 1 + 1, "夹具只有 2 个数据日 → 2 列");
+
+	const manyDaily = [];
+	for (let i = 0; i < 60; i += 1) {
+		const d = new Date(Date.UTC(2026, 6, 23) + i * 86400000).toISOString().slice(0, 10);
+		manyDaily.push({ day: d, calls: i + 1, in: 100, cr: 0, cw: 0, out: 1 });
+	}
+	const rpc60 = makeRpcStub();
+	rpc60.respond(() => ({ ok: true, value: makeSummary({ daily: manyDaily, windowStart: "2026-07-23" }) }));
+	const setup60 = setupClient({ rpc: rpc60 });
+	const sixty = await renderPanel(setup60.react, setup60.main, { t: setup60.t });
+	const columns = barNodesOf(sixty).length;
+	assert.equal(columns, 60, `60 天窗口应逐日 60 列，实际 ${columns}`);
+});
+
+test("TS-23：sqrt 刻度可被识别（绘图区 tooltip 有口径说明，且不是裸 Math.sqrt 文案）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const plot = plotOf(tree);
+	const title = String(plot.props.title ?? "");
+	// `Math.sqrt` 未声明时读者会按线性误读：「三根差不多高」被读成「三天差不多量」。
+	// 说明必须落在界面上（title 是鼠标可达的最短路径），且不能是纯英文术语。
+	assert.ok(title.length > 0, "绘图区必须有刻度口径说明");
+	assert.ok(/平方根|平方根刻度/.test(title), `说明须点明平方根刻度，实际 ${title}`);
+});
+
+test("TS-23：峰值柱顶部标数值，其余柱只留 tooltip", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const labels = nodesOf(tree).filter((n) => typeof n.props.className === "string"
+		&& /(?:^|\s)dsh-tokstats-barPeak(?:\s|$)/.test(n.props.className));
+	assert.equal(labels.length, 1, `恰好一个峰值标签，实际 ${labels.length}`);
+	assert.equal(textOf(labels[0]), "2", "峰值标签是峰值那天的调用数（fmtTok）");
+	// 峰值标签必须落在峰值那一列的柱体内部，否则它标的是别的柱。
+	// 单日列的 tooltip span 是原始日键 `2026-10-19`（合并列才是 `M/D–M/D`）。
+	const peakBar = barNodesOf(tree).find((n) => nodesOf(n).includes(labels[0]));
+	assert.ok(peakBar !== undefined, "峰值标签应在某根柱内");
+	assert.equal(String(peakBar.props.title).includes("2026-10-19"), true,
+		`峰值柱是 10/19，实际 ${peakBar.props.title}`);
+	// 其余柱不得出现数值标签。
+	const otherLabels = barNodesOf(tree)
+		.filter((n) => n !== peakBar)
+		.flatMap((n) => nodesOf(n))
+		.filter((n) => typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-barPeak"));
+	assert.equal(otherLabels.length, 0, "非峰值柱不标数值");
+});
+
+test("TS-17 / AC-5：KPI 四卡副值两两不等，且每张是对主值的拆分（不复述他卡）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const hints = nodesOf(tree)
+		.filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-kpiHint")
+		.map((n) => textOf(n));
+	assert.equal(hints.length, 4, "四张卡各有副值");
+	assert.equal(new Set(hints).size, 4, `四卡副值两两不等，实际 ${JSON.stringify(hints)}`);
+
+	// 「缓存命中率」副值给的是这个百分比的分子 / 分母（命中 tokens / 计费输入），
+	// 而不是复述「缓存读」这个已经在「输入」卡拆分里出现过的数字。
+	// 夹具：cr = 3000 / billed = 204000 → 1%。
+	assert.match(hints[3], /^命中 3\.0K \/ 204K$/, `命中率副值应为分子/分母，实际 ${hints[3]}`);
+	// 「输出」副值 = 输出占输入的比例（250 / 204000 ≈ 0.12%），与「缓存写」无关。
+	assert.match(hints[2], /^占输入 0\.12%$/, `输出副值应为占输入比例，实际 ${hints[2]}`);
+	// 两个旧形态必须消失：它们正是「复述他卡数字」的两种写法。
+	for (const hint of hints) {
+		assert.ok(!/缓存写/.test(hint), `副值不得出现「缓存写」（与输出无关），实际 ${hint}`);
+	}
+	assert.ok(!/^缓存读 /.test(hints[3]), `命中率副值不得复述「缓存读」，实际 ${hints[3]}`);
+});
+
+test("TS-17：输出副值在计费输入为 0 时给破折号，不编一个 0%", async () => {
+	// 分母为 0 时「占输入的比例」在数学上无定义。写 0% 会让读者以为「输出为 0」，
+	// 而实际上整窗没有输入（或数据缺失）——两种情况的含义完全不同。
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({
+		ok: true,
+		value: makeSummary({
+			buckets: Array.from({ length: 6 }, () => ({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 })),
+			daily: [],
+			weekly: [],
+			workspaces: [],
+			routes: [],
+			totals: { calls: 3, in: 0, cr: 0, cw: 0, out: 250 },
+		})
+	}));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const hints = nodesOf(tree)
+		.filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-kpiHint")
+		.map((n) => textOf(n));
+	assert.equal(hints[2], "\u2014", `输入为 0 时输出副值应为破折号，实际 ${hints[2]}`);
+});
+
+test("AC-6：2:1 行用 stretch 对齐（不再用 start 留出空洞）", () => {
+	injectedStyleTags.length = 0;
+	setupClient();
+	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-plugins/tokstats").textContent;
+	const rule = css.match(/\.dsh-tokstats-rowGrid\{([^}]*)\}/);
+	assert.ok(rule !== null, "2:1 行规则应存在");
+	assert.match(rule[1], /align-items:stretch/, "同行卡片等高（AC-6）");
+	assert.ok(!/align-items:start/.test(rule[1]), "不得退回 start（会留出空洞）");
+});
+
+test("AC-7：选中态用品牌色 + 反色文字（不是与容器底只差几级的 bg-layer-2）", () => {
+	injectedStyleTags.length = 0;
+	setupClient();
+	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-plugins/tokstats").textContent;
+	const rule = css.match(/\.dsh-tokstats-switchOn\{([^}]*)\}/);
+	assert.ok(rule !== null, "选中态规则应存在");
+	assert.match(rule[1], /background:var\(--dsw-alias-brand-primary\)/, "选中态用品牌色底（AC-7）");
+	assert.match(rule[1], /color:var\(--dsw-alias-label-primary-inverted\)/, "配反色文字保证可读");
+	assert.ok(!/bg-layer-2/.test(rule[1]), "不得退回 bg-layer-2（实测只差 9 级灰度）");
+	// hover 规则必须紧跟：`.switch:hover` 的特异性高于 `.switchOn` 这个单类，
+	// 不补 `.switchOn:hover` 时鼠标停在选中项上会把品牌色底覆盖回灰。
+	const hoverRule = css.match(/\.dsh-tokstats-switchOn:hover\{([^}]*)\}/);
+	assert.ok(hoverRule !== null, "选中态 hover 规则应存在（否则悬停时选中态消失）");
+	assert.match(hoverRule[1], /background:var\(--dsw-alias-brand-primary\)/);
+});
+
+test("TS-17 / TS-23：词典新增键 zh/en 成对、无 provider / model 两词", () => {
+	const { dicts } = setupClient();
+	assertDictPair(assert, NS, dicts);
+	const zh = dicts[NS].zh;
+	const en = dicts[NS].en;
+	const added = ["kpi.outputHint", "kpi.hitHint", "tip.dailyScale"];
+	for (const key of added) {
+		assert.ok(Object.prototype.hasOwnProperty.call(zh, key), `zh 缺键 ${key}`);
+		assert.ok(Object.prototype.hasOwnProperty.call(en, key), `en 缺键 ${key}`);
+		assert.ok(!/\bprovider\b/i.test(zh[key]), `zh ${key} 不得出现 provider`);
+		assert.ok(!/\bmodel\b/i.test(zh[key]), `zh ${key} 不得出现 model`);
+		assert.ok(!/\bprovider\b/i.test(en[key]), `en ${key} 不得出现 provider`);
+		assert.ok(!/\bmodel\b/i.test(en[key]), `en ${key} 不得出现 model`);
+	}
+	// 整句模板：占位符成对出现，不是把数字拼进固定句子。
+	assert.ok(zh["kpi.outputHint"].includes("{pct}") && en["kpi.outputHint"].includes("{pct}"));
+	assert.ok(zh["kpi.hitHint"].includes("{cached}") && zh["kpi.hitHint"].includes("{billed}"));
+	assert.ok(en["kpi.hitHint"].includes("{cached}") && en["kpi.hitHint"].includes("{billed}"));
+	// K/M 是记号，不进词典（AGENTS 硬规则 7）：模板里不得出现 K/M/千分位数字。
+	for (const key of added) {
+		assert.ok(!/\d/.test(zh[key]), `zh ${key} 不得含数字记号（K/M 与刻度值不进词典）`);
+	}
+});
