@@ -60,6 +60,19 @@ function panelPropsOf(rpc) {
 			"empty.noService": "统计服务不可用，无法读取会话数据",
 			"empty.noData": "暂无数据（还没有 usage 记录）",
 			"foot.generated": "生成于 {time}",
+			// 覆盖率披露（第二批）：走真实词典键名，模板内容与本文件断言的字面量一致。
+			"foot.coverage.one": "已统计 {count} 个会话",
+			"foot.coverage.other": "已统计 {count} 个会话",
+			"foot.skipped.one": " · 跳过 {count} 个（日志不可读）",
+			"foot.skipped.other": " · 跳过 {count} 个（日志不可读）",
+			"tip.coverage.one": "本次统计覆盖 {count} 个会话的全部可读日志",
+			"tip.coverage.other": "本次统计覆盖 {count} 个会话的全部可读日志",
+			"tip.coverageSkipped.one": "本次统计覆盖 {sessions} 个会话；{count} 个会话日志不可读，其用量未计入",
+			"tip.coverageSkipped.other": "本次统计覆盖 {sessions} 个会话；{count} 个会话日志不可读，其用量未计入",
+			"tip.dayEpoch.one": "{span}：{count} 次调用，输入 {input}，输出 {output}。含折叠历史（区间末归并）· {epochCalls} 次",
+			"tip.dayEpoch.other": "{span}：{count} 次调用，输入 {input}，输出 {output}。含折叠历史（区间末归并）· {epochCalls} 次",
+			"tip.day.one": "{span}：{count} 次调用，输入 {input}，输出 {output}",
+			"tip.day.other": "{span}：{count} 次调用，输入 {input}，输出 {output}",
 		};
 		const template = table[key] ?? key;
 		if (params === undefined) return template;
@@ -97,6 +110,10 @@ function makeSummary(overrides = {}) {
 		windowStart: "2026-07-23",
 		generatedAt: 1787000000000,
 		windowDays: 90,
+		// 可审计性载荷（第一批在 host 侧上线，第二批开始被界面消费）。缺省造
+		// 「三个会话都能读、无折叠历史」的常态；需要反例的用例显式 override。
+		coverage: { sessions: 3, skipped: 0 },
+		epoch: null,
 		...overrides,
 	};
 }
@@ -767,4 +784,190 @@ test("AC-13：正增量带 + 号，零增量不带", async () => {
 	const tree = await renderPanel(react, main, { t });
 	const row = nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-row") && String(n.props.title ?? "").includes("字符增减"));
 	assert.match(row.props.title, /\+40/);
+});
+
+// ── 第二条：覆盖率披露与 epoch 打标（第二批；TS-21 / TS-22） ────────────────
+//
+// 这两组的失败模式都是「界面撒谎」：少报跳过数会让读者以为数据完整；该打标的
+// 列不打标会让一个合成的历史尖峰看起来像真实的一天。两者都只能靠断言抓。
+
+/** 页脚节点（含覆盖率披露与区间）。 */
+function footOf(tree) {
+	return nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-foot");
+}
+
+/** 覆盖率披露节点（缺失时返回 undefined，供「不渲染」断言用）。 */
+function coverageNodeOf(tree) {
+	return nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-footCoverage");
+}
+
+test("TS-21 / AC-2：页脚渲染「已统计 N 个会话」", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ coverage: { sessions: 42, skipped: 0 } }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const coverage = coverageNodeOf(tree);
+	assert.ok(coverage, "覆盖率披露节点应渲染");
+	assert.equal(textOf(coverage), "已统计 42 个会话");
+	// 页脚仍保留生成时刻与区间（新句子不得把它们挤掉）。
+	const foot = footOf(tree);
+	assert.match(textOf(foot), /生成于 \d{2}:\d{2}:\d{2}/);
+	assert.ok(textOf(foot).includes("7/23"), "统计区间仍在页脚");
+});
+
+test("TS-21 / AC-2：skipped > 0 才出现「跳过」，并带原因 tooltip", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ coverage: { sessions: 5, skipped: 2 } }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const coverage = coverageNodeOf(tree);
+	assert.ok(coverage, "覆盖率披露节点应渲染");
+	const text = textOf(coverage);
+	assert.ok(text.includes("已统计 5 个会话"), `应含会话数，实际 ${text}`);
+	assert.ok(text.includes("跳过 2 个"), `应含跳过数，实际 ${text}`);
+	assert.ok(text.includes("日志不可读"), "应写明原因");
+	assert.match(String(coverage.props.title), /5 个会话/);
+	assert.match(String(coverage.props.title), /2 个会话日志不可读/);
+	// 占位符必须被替换（踩过：模板写 {sessions} 而 tCount 注入的是 count，
+	// 结果 tooltip 直接显示「本次统计覆盖 {sessions} 个会话」）。
+	assert.ok(!/\{\w+\}/.test(String(coverage.props.title)), `tooltip 不得残留未替换占位符，实际 ${coverage.props.title}`);
+});
+
+test("TS-21 / AC-2：skipped === 0 时不显示「跳过」（不显示假零）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ coverage: { sessions: 3, skipped: 0 } }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const text = textOf(tree);
+	assert.ok(!text.includes("跳过"), "零跳过时不得出现「跳过 0 个」这类假零");
+	assert.ok(!text.includes(" 0 个"), "不得出现任何「0 个」形式");
+	// tooltip 也不该提跳过。
+	const coverage = coverageNodeOf(tree);
+	assert.ok(!String(coverage.props.title).includes("跳过"));
+});
+
+test("TS-21：旧 host 无 coverage 字段时整句不渲染、不抛错（硬规则 6）", async () => {
+	const rpc = makeRpcStub();
+	// 模拟旧 host：把 coverage 整个删掉（不是设 null）。
+	const summary = makeSummary();
+	delete summary.coverage;
+	rpc.respond(() => ({ ok: true, value: summary }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	assert.equal(coverageNodeOf(tree), undefined, "无 coverage 时不得渲染该句");
+	assert.ok(!textOf(tree).includes("已统计"), "无 coverage 时不得出现「已统计」");
+	// 其余照常。
+	assert.ok(textOf(tree).includes("每日调用量"));
+	assert.ok(textOf(footOf(tree)).includes("7/23"));
+});
+
+test("TS-21：coverage 为空对象 / sessions 非数字时同样不渲染（降级不抛错）", async () => {
+	for (const coverage of [{}, { sessions: "many", skipped: 1 }, null]) {
+		const rpc = makeRpcStub();
+		rpc.respond(() => ({ ok: true, value: makeSummary({ coverage }) }));
+		const { react, main, t } = setupClient({ rpc });
+		const tree = await renderPanel(react, main, { t });
+		assert.equal(coverageNodeOf(tree), undefined, `coverage=${JSON.stringify(coverage)} 时不得渲染该句`);
+	}
+});
+
+/** 日柱节点（含折叠标记类名与 tooltip）。 */
+function barNodesOf(tree) {
+	return nodesOf(tree).filter((n) => typeof n.props.className === "string" && /(?:^|\s)dsh-tokstats-bar(?:\s|$)/.test(n.props.className));
+}
+
+test("TS-22 / AC-3：epoch 非空 → 代表日那一列带折叠标记类名", async () => {
+	const rpc = makeRpcStub();
+	// daily 是 10/19、10/20；epoch.end = 10/21 → 代表日 = 10/20（end - 1）。
+	rpc.respond(() => ({ ok: true, value: makeSummary({ epoch: { end: "2026-10-21", calls: 7 } }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const bars = barNodesOf(tree);
+	const marked = bars.filter((n) => n.props.className.includes("dsh-tokstats-barEpoch"));
+	assert.equal(marked.length, 1, `恰好一列带折叠标记，实际 ${marked.length}`);
+	// 标记的是 10/20 那列（其 tooltip 的 span 是 10/20）。
+	assert.ok(String(marked[0].props.title).includes("2026-10-20"), `应为 10/20 那列，实际 ${marked[0].props.title}`);
+	assert.ok(String(marked[0].props.title).includes("含折叠历史"), "tooltip 应写明含折叠历史");
+	assert.match(String(marked[0].props.title), /区间末归并/);
+	assert.match(String(marked[0].props.title), /7 次/, "tooltip 应带折叠历史的调用数");
+	// 其余列不带标记、tooltip 不提折叠。
+	for (const bar of bars) {
+		if (bar === marked[0]) continue;
+		assert.ok(!bar.props.className.includes("dsh-tokstats-barEpoch"));
+		assert.ok(!String(bar.props.title).includes("折叠"), "普通列不得出现折叠字样");
+	}
+});
+
+test("TS-22 / AC-3：epoch 为 null 时不出现任何折叠标记（反向断言）", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ epoch: null }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const bars = barNodesOf(tree);
+	assert.ok(bars.length > 0, "应有柱位");
+	for (const bar of bars) {
+		assert.ok(!bar.props.className.includes("dsh-tokstats-barEpoch"), "无 epoch 时不得出现标记类名");
+		assert.ok(!String(bar.props.title).includes("折叠"), "无 epoch 时 tooltip 不得提折叠");
+	}
+});
+
+test("TS-22：代表日落在合并列区间内时也要标（不只比对列首日）", async () => {
+	// 造一个 90 天窗口 + 稀疏数据：列会被合并（span > 1），代表日落在列中段。
+	// 只比对 startDay 的实现会在这种列上漏标——而它恰恰是「全部/长窗口」档最常见
+	// 的形态（那时列必然合并）。
+	const rpc = makeRpcStub();
+	const daily = [
+		{ day: "2026-07-01", calls: 1, in: 100, cr: 0, cw: 0, out: 1 },
+		{ day: "2026-10-20", calls: 1, in: 100, cr: 0, cw: 0, out: 1 },
+	];
+	rpc.respond(() => ({ ok: true, value: makeSummary({ daily, windowStart: "2026-07-01", epoch: { end: "2026-08-15", calls: 3 } }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const marked = barNodesOf(tree).filter((n) => n.props.className.includes("dsh-tokstats-barEpoch"));
+	assert.equal(marked.length, 1, `合并列也必须被标记，实际 ${marked.length}`);
+	// 该列的区间应覆盖 2026-08-14（= end - 1）。
+	assert.ok(String(marked[0].props.title).includes("8/14"), `tooltip 应含代表日 8/14，实际 ${marked[0].props.title}`);
+});
+
+test("TS-21 / TS-22：词典新增键 zh/en 成对、无 provider / model 两词", () => {
+	const { dicts } = setupClient();
+	assertDictPair(assert, NS, dicts);
+	const zh = dicts[NS].zh;
+	const en = dicts[NS].en;
+	const added = [
+		"foot.coverage.one", "foot.coverage.other",
+		"foot.skipped.one", "foot.skipped.other",
+		"tip.coverage.one", "tip.coverage.other",
+		"tip.coverageSkipped.one", "tip.coverageSkipped.other",
+		"tip.dayEpoch.one", "tip.dayEpoch.other",
+	];
+	for (const key of added) {
+		assert.ok(Object.prototype.hasOwnProperty.call(zh, key), `zh 缺键 ${key}`);
+		assert.ok(Object.prototype.hasOwnProperty.call(en, key), `en 缺键 ${key}`);
+		assert.ok(!/\bprovider\b/i.test(zh[key]), `zh ${key} 不得出现 provider`);
+		assert.ok(!/\bmodel\b/i.test(zh[key]), `zh ${key} 不得出现 model`);
+		assert.ok(!/\bprovider\b/i.test(en[key]), `en ${key} 不得出现 provider`);
+		assert.ok(!/\bmodel\b/i.test(en[key]), `en ${key} 不得出现 model`);
+	}
+	// 计数句是整句模板（带 {count} 占位符），不是「已统计」+ 数字拼接。
+	assert.ok(zh["foot.coverage.one"].includes("{count}"), "计数句必须是整句模板");
+	assert.ok(en["foot.coverage.one"].includes("{count}"));
+	assert.ok(zh["tip.dayEpoch.other"].includes("{epochCalls}"), "折叠 tooltip 必须是整句模板");
+	assert.ok(en["tip.dayEpoch.other"].includes("{epochCalls}"));
+});
+
+test("样式：折叠列用斜纹/次要底色，不写死颜色（TS-22）", () => {
+	injectedStyleTags.length = 0;
+	setupClient();
+	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats");
+	assert.ok(tag, "tokstats 样式 tag 应已注入");
+	assert.match(tag.textContent, /\.dsh-tokstats-barEpoch/, "折叠列样式规则应存在");
+	const rule = tag.textContent.match(/\.dsh-tokstats-barEpoch[^{]*\{([^}]*)\}/);
+	assert.ok(rule !== null, "应能取出折叠列规则");
+	assert.match(rule[1], /var\(--dsw-alias-/, "颜色必须走主题变量，不写死");
+	assert.ok(!/#[0-9a-fA-F]{3,6}\b/.test(rule[1]), "不得出现写死的十六进制颜色");
+	// 页脚必须允许换行，否则窄窗下覆盖率句会把统计区间挤掉（AC-2 / au2-4d）。
+	const footRule = tag.textContent.match(/\.dsh-tokstats-foot\{([^}]*)\}/);
+	assert.ok(footRule !== null);
+	assert.match(footRule[1], /flex-wrap:wrap/, "页脚需 flex-wrap 防窄窗挤压");
 });
