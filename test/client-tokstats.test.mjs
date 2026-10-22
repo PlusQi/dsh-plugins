@@ -871,6 +871,95 @@ test("TS-21：coverage 为空对象 / sessions 非数字时同样不渲染（降
 	}
 });
 
+/** 「校验中」节点（缺失时 undefined，供反向断言用）。 */
+function verifyingNodeOf(tree) {
+	return nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-footVerifying");
+}
+
+test("TS-24：verifying 为 true 时页脚显示「校验中」", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ verifying: true }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const node = verifyingNodeOf(tree);
+	assert.ok(node, "verifying=true 时必须有「校验中」提示");
+	assert.equal(textOf(node), "校验中…");
+	// 过渡态提示不得挤掉页脚原有信息。
+	assert.match(textOf(footOf(tree)), /生成于 \d{2}:\d{2}:\d{2}/);
+});
+
+test("TS-24：verifying 时不得把待校验会话谎报成「日志不可读」", async () => {
+	// 首帧实测踩到：冷启动时 68 个会话只是「还没读出来」，页脚却写
+	// 「跳过 68 个（日志不可读）」——那是对用户谎报故障。待校验 ≠ 读不出来。
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary({ verifying: true, coverage: { sessions: 70, skipped: 68 } }) }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const coverage = coverageNodeOf(tree);
+	assert.ok(coverage, "覆盖率句仍要渲染");
+	const text = textOf(coverage);
+	assert.ok(!text.includes("跳过"), `校验中不得出现「跳过」，实际 ${text}`);
+	assert.ok(!text.includes("日志不可读"), "校验中不得出现「日志不可读」");
+	assert.ok(text.includes("已统计 70 个会话"), "会话数照常披露");
+	// 收敛后（verifying 消失）同样的 skipped 才该显示为跳过。
+	const rpc2 = makeRpcStub();
+	rpc2.respond(() => ({ ok: true, value: makeSummary({ coverage: { sessions: 70, skipped: 2 } }) }));
+	const second = setupClient({ rpc: rpc2 });
+	const tree2 = await renderPanel(second.react, second.main, { t: second.t });
+	assert.ok(textOf(coverageNodeOf(tree2)).includes("跳过 2 个"), "收敛后 skipped 才作为跳过披露");
+});
+
+test("TS-24：verifying 缺席（旧 host / 已收敛）时不显示「校验中」，也不重拉", async () => {
+	for (const value of [undefined, false]) {
+		const rpc = makeRpcStub();
+		const summary = makeSummary();
+		if (value !== undefined) summary.verifying = value;
+		rpc.respond(() => ({ ok: true, value: summary }));
+		const { react, main, t } = setupClient({ rpc });
+		const tree = await renderPanel(react, main, { t });
+		assert.equal(verifyingNodeOf(tree), undefined, `verifying=${String(value)} 时不得显示提示`);
+		// 不得重拉：一轮 effect 只应发一次 summary 请求。
+		const summaryCalls = rpc.calls.filter((c) => c.endpoint === "summary");
+		assert.equal(summaryCalls.length, 1, `verifying=${String(value)} 时不得自动重拉`);
+	}
+});
+
+test("TS-24：verifying 为 true 时自动重拉一次，收敛后停止", async () => {
+	// 用真实计时器（面板的重拉间隔是 1500ms，这里把全局 setTimeout 换成同步
+	// 立即触发，避免用例真的等 1.5s——重拉的**逻辑**才是被测对象）。
+	const realSetTimeout = globalThis.setTimeout;
+	const pendingTimers = [];
+	globalThis.setTimeout = (fn) => {
+		pendingTimers.push(fn);
+		return 1;
+	};
+	try {
+		const rpc = makeRpcStub();
+		let round = 0;
+		rpc.respond(() => {
+			round += 1;
+			// 第 1 轮：后台校验中；第 2 轮：已收敛。
+			return { ok: true, value: makeSummary({ verifying: round === 1 }) };
+		});
+		const { react, main, t } = setupClient({ rpc });
+		await renderPanel(react, main, { t });
+		const summaryAfterFirst = rpc.calls.filter((c) => c.endpoint === "summary").length;
+		assert.equal(summaryAfterFirst, 1, "首轮一次请求");
+		assert.equal(pendingTimers.length, 1, "verifying=true 必须安排一次重拉");
+
+		// 触发重拉：等价于组件因 nonce 变化重跑 effect。
+		pendingTimers[0]();
+		react.runEffects();
+		for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+		const summaryAfterSecond = rpc.calls.filter((c) => c.endpoint === "summary").length;
+		assert.equal(summaryAfterSecond, 2, "重拉必须真的再请求一次");
+		// 第二轮已收敛（verifying=false）→ 不得再安排重拉。
+		assert.equal(pendingTimers.length, 1, "收敛后不得再排重拉（否则会无限轮询）");
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+	}
+});
+
 /** 日柱节点（含折叠标记类名与 tooltip）。 */
 function barNodesOf(tree) {
 	return nodesOf(tree).filter((n) => typeof n.props.className === "string" && /(?:^|\s)dsh-tokstats-bar(?:\s|$)/.test(n.props.className));

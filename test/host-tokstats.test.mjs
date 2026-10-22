@@ -768,11 +768,13 @@ test("AC-6 / I3：ver: 2 的旧缓存行被跳过，冷折叠重建成功且不�
 	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
+	// 首帧不等待冷读（TS-24）：先拿到空态，再等后台校验收敛后取真值。
 	let result;
 	await assert.doesNotReject(async () => {
 		result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	});
 	assert.equal(result.ok, true, "旧版本行作废后不得抛错（AC-6）");
+	result = await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
 	assert.equal(cache.calls.coldSnapshot, 1, "必须走冷折叠重建");
 	assert.equal(result.value.totals.calls, 2, "重建后的数字与真实日志一致");
 	// 第二批起 routes 由聚合产出；旧行作废重建后它必须同样可用（不复用旧形状）。
@@ -882,12 +884,13 @@ test("排行行形状：与 workspaces 同形状（rt + 四桶 + calls），不�
 
 test("TS-19：冷读后若缓存水位低于已见日志末序号，下一次汇总改为冷读覆盖", async () => {
 	const connection = makeConnection();
-	// 第一次：缓存未命中 → 冷读，coldAsOfSeq 是日志末序号 2，建立基线
+	// 第一次：缓存未命中 → 后台冷读，coldAsOfSeq 是日志末序号 2，建立基线
 	const cache = makeProjectionCache({}, { coldAsOfSeq: 2 });
 	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
-	await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	// 首帧只排队（TS-24），必须等后台冷读跑完、基线建立。
+	await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
 	assert.equal(cache.calls.coldSnapshot, 1, "首次必然冷读");
 
 	// 模拟真实缺陷形态：缓存行存在但水位停在 0（远早于日志末尾 2）。
@@ -898,6 +901,8 @@ test("TS-19：冷读后若缓存水位低于已见日志末序号，下一次汇
 	const second = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(second.ok, true);
 	assert.equal(cache.calls.cachedSnapshot, 1, "仍先尝试零 I/O 读缓存");
+	// 判定滞后 → 排后台校验；再等它跑完确认真的冷读了。
+	await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
 	assert.equal(cache.calls.coldSnapshot, 1, "水位低于已见日志末序号 → 冷读覆盖（TS-19）");
 });
 
@@ -910,7 +915,7 @@ test("TS-19：缓存水位追平已见日志末序号时仍走零 I/O（不误�
 	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
-	await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
 	assert.equal(cache.calls.coldSnapshot, 1, "首次冷读建立基线（日志末序号 2）");
 
 	// 让缓存水位追平基线：asOfSeq = 2 不再低于已见的 2 → 不得冷读
@@ -918,6 +923,7 @@ test("TS-19：缓存水位追平已见日志末序号时仍走零 I/O（不误�
 	cache.calls.coldSnapshot = 0;
 	const second = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(second.ok, true);
+	assert.equal(second.value.verifying, undefined, "水位已追平 → 不进校验队列");
 	assert.equal(cache.calls.coldSnapshot, 0, "水位已追平 → 保持零 I/O，不得退化成每次冷读");
 });
 
@@ -945,8 +951,7 @@ test("TS-19：verifyStale=false 时不建立基线，直接采信缓存（退回
  * （listSessions / readSession），面外调用抛错——桩比宿主宽松会让用错 API 的实现
  * 也全绿。
  */
-function makeSessionQuery(records, logsById) {
-	const calls = { listSessions: 0, readSession: 0 };
+function makeSessionQuery(records, logsById) {	const calls = { listSessions: 0, readSession: 0 };
 	const stub = {
 		calls,
 		async listSessions() {
@@ -968,6 +973,32 @@ function makeSessionQuery(records, logsById) {
 			throw new Error(`tokstats 调了 sessionQuery.${String(key)}：真实服务面上没有这个方法`);
 		},
 	});
+}
+
+/**
+ * 等后台校验收敛（TS-24）。
+ *
+ * 首帧只排队列、不等待冷读，所以「冷读发生过」这类断言必须先等 drain 跑完。
+ * 判据是「再请求一次，`verifying` 已消失**且**数字已稳定」：
+ * - 只等 `verifying` 不够——drain 在 `await readSession` 之后才写回缓存，
+ *   而 `verifying` 反映的是「队列里还有没有活」，两者之间有一个 tick 的间隙；
+ * - 所以这里连数字一起等：调用方给出期望值后，等到该值出现为止。
+ *
+ * @param connection - 伪 connection（`invoke` 返回信封里的 result）。
+ * @param payload - RPC 入参。
+ * @param pick - 从 result.value 里取待稳定的数字；缺省只等 `verifying` 消失。
+ */
+async function waitVerifyingSettled(connection, payload = {}, pick, rounds = 200) {
+	let last;
+	for (let i = 0; i < rounds; i += 1) {
+		// 注意 `connection.invoke` 返回的是**信封里的 result**（不是信封本身）：
+		// 既有用例都按 `result.ok` / `result.value` 取值。
+		last = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, payload);
+		const settled = last?.ok === true && last.value?.verifying !== true;
+		if (settled && (pick === undefined || pick(last.value) === true)) return last;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error("后台校验在 200 轮内未收敛（TS-24）");
 }
 
 /**
@@ -1059,13 +1090,20 @@ function makeConnection() {
  * `cannot get property "webServer" without inject` 而不注册通道——这是实测踩到的
  * 真缺陷，桩必须按真实契约提供它，否则测不出「忘了注入」。
  */
-function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections = true, webServer, loggerWarns } = {}) {
+function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections = true, liveSessions, webServer, loggerWarns } = {}) {
 	const state = { registered: [], injectCalls: [], effects: [] };
 	const hasWebServer = webServer !== null;
 	// 默认用 connection 自带的那份 webServer 桩：用例既能 `connection.invoke(...)`
 	// 驱动路由，又不必显式传两层桩。
 	const server = webServer ?? connection?.server ?? makeWebServerStub();
 	const provided = { connection, sessionQuery, sessionProjectionCache, webServer: hasWebServer ? server : null };
+	// `sessions` 服务（TS-24 的活会话零回放路径要 `ctx.get("sessions").get(id)`）。
+	// 默认缺席：多数用例不该被迫提供它，缺席时实现退回冷读（硬规则 6）。
+	if (liveSessions !== undefined) provided.sessions = { get: (id) => liveSessions[id] };
+	// `projections` 给完整读面对象时，它同时充当 `ctx.get("sessionProjections")`
+	// 的读取面（实现用 get 惰性取，与 register 用的 inject 面是两回事）。
+	const projectionReader = typeof projections === "object" && projections !== null ? projections : undefined;
+	if (projectionReader !== undefined) provided.sessionProjections = projectionReader;
 	const ctx = {
 		logger: { warn: (...args) => { if (loggerWarns !== undefined) loggerWarns.push(args.join(" ")); } },
 		get(name) {
@@ -1084,8 +1122,12 @@ function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections
 			for (const name of names) {
 				if (name === "sessionProjections") {
 					if (projections === false) continue;
-					pctx.sessionProjections = { register: (def) => { state.registered.push(def); return () => {}; } };
-					continue;
+					// `projections` 若给了完整读面对象（带 cachedSnapshot/snapshot），
+					// 就同时充当注册面与读面；否则只造一个 register 桩。
+					const isReader = typeof projections === "object" && projections !== null;
+					pctx.sessionProjections = isReader
+						? { ...projections, register: (def) => { state.registered.push(def); return () => {}; } }
+						: { register: (def) => { state.registered.push(def); return () => {}; } };					continue;
 				}
 				const service = provided[name];
 				if (service !== undefined && service !== null) pctx[name] = service;
@@ -1226,14 +1268,16 @@ test("冷折叠兜底：缓存未命中时 readSession + coldSnapshot，数字�
 	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
-	assert.equal(result.ok, true);
+	// 首帧只排队（TS-24），数字要等后台校验收敛后才有。
+	const settled = await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
+	assert.equal(settled.ok, true);
 	assert.equal(cache.calls.coldSnapshot, 1);
 	assert.equal(query.calls.readSession, 1);
+	const value = settled.value;
 	// 200000 → 桶 3（[128K,256K)）；1000 → 桶 0
-	assert.equal(result.value.buckets[3].calls, 1);
-	assert.equal(result.value.buckets[0].calls, 1);
-	assert.equal(result.value.totals.calls, 2);
+	assert.equal(value.buckets[3].calls, 1);
+	assert.equal(value.buckets[0].calls, 1);
+	assert.equal(value.totals.calls, 2);
 });
 
 test("单会话 readSession 失败：跳过该会话，其余正常（不抛错）", async () => {
@@ -1247,9 +1291,9 @@ test("单会话 readSession 失败：跳过该会话，其余正常（不抛错�
 	);
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache, loggerWarns });
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
-	assert.equal(result.ok, true, "单会话失败不得让整次汇总失败");
-	assert.equal(result.value.totals.calls, 2, "另一会话仍被计入");
+	const settled = await waitVerifyingSettled(connection);
+	assert.equal(settled.ok, true, "单会话失败不得让整次汇总失败");
+	assert.equal(settled.value.totals.calls, 2, "另一会话仍被计入");
 	assert.ok(loggerWarns.some((line) => line.includes(HEADER.id)), "失败会话应有告警");
 });
 
@@ -1267,7 +1311,10 @@ test("TS-21 / TS-22：端点返回值里带 coverage 与 epoch（client 的唯�
 	);
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	// 首帧的 coverage 就已经是完整的（分母来自 listSessions，与后台校验无关）；
+	// 但 skipped 只有在冷读跑过之后才确定，故等收敛后再断言。
+	const settled = await waitVerifyingSettled(connection);
+	const result = settled;
 	assert.equal(result.ok, true);
 	// 端点值里必须有这两个字段，且形状正确。
 	assert.equal(typeof result.value.coverage, "object");
@@ -1485,11 +1532,40 @@ test("活会话跳过缓存：检查点滞后时不得采信（官方水位无�
 	const query = makeSessionQuery([{ header: HEADER, live: true }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
-	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	// 活会话优先读投影注册表（TS-24）；本用例没有注册表，故退回后台冷读。
+	const result = await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
 	assert.equal(result.ok, true);
 	assert.equal(cache.calls.cachedSnapshot, 0, "活会话不得读缓存");
 	assert.equal(query.calls.readSession, 1, "应走冷读（活会话是内存快照）");
 	assert.equal(result.value.totals.calls, 2, "数字来自日志而非陈旧检查点");
+});
+
+test("TS-24：活会话走投影注册表 cachedSnapshot，不调用 readSession", async () => {
+	// 宿主注册表在 session/event 上急切驱动本单元，所以活会话的正确值本来就在
+	// 内存里；再调 readSession 全量回放是重复劳动（实测单会话 604 ms vs 微秒级）。
+	const connection = makeConnection();
+	const cache = makeProjectionCache({});
+	const query = makeSessionQuery([{ header: HEADER, live: true }], { [HEADER.id]: sampleLog(HEADER) });
+	const liveSession = { id: HEADER.id, seq: 3 };
+	const view = { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 3, calls: 5, in: 100, cr: 0, cw: 0, out: 1, rt: "p/m" }] };
+	const calls = { cachedSnapshot: 0, snapshot: 0 };
+	const projections = {
+		cachedSnapshot(session, keys) {
+			calls.cachedSnapshot += 1;
+			assert.equal(session, liveSession, "必须把活会话对象交给注册表");
+			assert.deepEqual(keys, [TOKSTATS_KEY]);
+			return { asOfSeq: 2, values: { [TOKSTATS_KEY]: view } };
+		},
+		snapshot() { calls.snapshot += 1; return undefined; },
+	};
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache, projections, liveSessions: { [HEADER.id]: liveSession } });
+	startTokstats(ctx);
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, true);
+	assert.equal(calls.cachedSnapshot, 1, "活会话必须走注册表零折叠读");
+	assert.equal(query.calls.readSession, 0, "活会话不得回放日志");
+	assert.equal(result.value.totals.calls, 5, "数字来自注册表里的实时单元");
+	assert.equal(result.value.verifying, undefined, "活会话不需要进校验队列");
 });
 
 test("非活会话仍走缓存（零 I/O 路径不被上一条改坏）", async () => {
@@ -1505,3 +1581,5 @@ test("非活会话仍走缓存（零 I/O 路径不被上一条改坏）", async 
 	assert.equal(query.calls.readSession, 0);
 	assert.equal(result.value.totals.calls, 9);
 });
+
+
