@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
+  <!-- 与侧栏「Token 分析」入口同一造型：三柱直方 + 基线，单色 currentColor。
+       宿主读 package.json 的 icon 字段时按 SVG 原样内联（上限 256 KiB），
+       所以这里不用任何外部引用、不写死颜色。 -->
+  <path d="M2.5 13.5h11M4 11V7.5M7.5 11V3.5M11 11V6"
+        stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

@@ -4,6 +4,29 @@
   "description": "个人 DSH 扩展集：单轮 token 三点式预告（tokprev）、跨会话 token 分析全局面板（tokstats，注册官方会话投影单元）与 composer 草稿保真结构化重排（promptopt，含 host 旁路模型调用与使用计数）等插件的集合包",
   "type": "module",
   "main": "lib/index.js",
+  "icon": "icon.svg",
+  "author": "PlusQi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PlusQi/dsh-plugins.git"
+  },
+  "homepage": "https://github.com/PlusQi/dsh-plugins",
+  "bugs": {
+    "url": "https://github.com/PlusQi/dsh-plugins/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "token",
+    "usage",
+    "analytics",
+    "ui"
+  ],
+  "engines": {
+    "dsh": "0.2.1-rc.2"
+  },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
     "guard": "node scripts/check-plugin-structure.js"
@@ -25,10 +48,16 @@
       "inject": [
         "@deepseek-ai/dsh-client-runtime"
       ]
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.1-rc.2": "compatible"
+      }
     }
   },
   "files": [
     "lib",
+    "icon.svg",
     "cordis.patch.yml",
     "CHANGELOG.md",
     "AGENTS.md",

@@ -47,16 +47,19 @@ Cross-session token statistics: the host folds tokens within one session only; t
 
 ![tokstats panel](./docs/assets/tokstats-en.png)
 
-"Token analytics" in the sidebar list opens a **full panel**, in four bands top to bottom (the daily chart and each pair of side-by-side cards take one band):
+"Token analytics" in the sidebar list opens a **full panel**, in four bands top to bottom (the daily chart and each pair of side-by-side cards take one band). Every block answers a specific question rather than dumping numbers:
 
-- **Metric cards** (four): calls (with the per-day rate for the window), input (split into uncached / cache read), output (with cache write), and cache-hit rate — scale and cache quality at a glance;
-- **Daily calls** (a full-width bar chart): it decides per window whether to draw each day or merge days into columns (per-day within 60 days), and bar height uses a square-root scale — real daily volumes differ by up to 100×, and on a linear scale everything but the peak collapses into a hairline; the peak date and count sit in the card's top-right corner and exact numbers are in the hover tooltips;
-- **Context length distribution**: billed input binned into the six tiers the market actually bills by input length — `[0,8K)` / `[8K,32K)` / `[32K,128K)` / `[128K,256K)` / `[256K,512K)` / `[512K,∞)`; the boundaries line up with Alibaba Cloud / Volcano Engine / Zhipu's input-length tiers (32K / 128K / 256K) and MiniMax's 512K cut, while 4K / 8K / 16K are tiers no vendor sets. The top bucket is `[512K,∞)` rather than a further 1M cut, because 1M is already the largest context window any model offers — a single request's prompt cannot exceed it, so that cell would always be empty. Each row is label + share bar + call count, with the detail (in / out / cached) on a second line, and the peak bucket in the card corner;
-  - This chart is an **observation surface, not a price list**: models such as OpenAI, Anthropic, DeepSeek, Kimi, Tencent Hunyuan Hy3, GLM-5.2/5.3 and qwen-max have no length-based tiering, so for them landing in `[128K,256K)` only says how long the request was — it does **not** mean a surcharge was applied;
-- **Trend (weekly)**: calls / input / output as four columns grouped by natural week (Monday-based); weekly totals always add up to the grand total (the weekly view is folded from the daily series — a single source of truth, so the two can never drift apart);
-- **Models**: a usage-share ranking by `provider/model` pair, sitting next to the workspace card. Each row is label + share bar + call count + `in · out · cached`; the same model under two providers takes two rows (that is the composite-key definition, not duplication); samples with no route land in an **Unattributed** row placed last, so the rows always add up to the grand total. **No cost accounting**: no amounts, no price table, no "no price configured";
-- **Workspaces**: ranked by call count with share bars, labelled by the last two path segments (the full path is in the tooltip); a picker switches to a single workspace (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted);
-- **Prompt restructure usage**: promptopt's started / adopted / dismissed counts, adoption rate, and the character delta on adoption (the card is hidden when promptopt is not enabled).
+| Block | The question it answers | How to read it |
+| --- | --- | --- |
+| **Metric cards** (four) | How much did this window use in total? How much did caching save? | calls (with the per-day rate for the window), input (split into uncached / cache read), output (with cache write), and cache-hit rate — scale and cache quality at a glance |
+| **Daily calls** (a full-width bar chart) | Which day was heavy? Where is the peak? | it decides per window whether to draw each day or merge days into columns (per-day within 60 days), and bar height uses a square-root scale — real daily volumes differ by up to 100×, and on a linear scale everything but the peak collapses into a hairline; the peak date and count sit in the card's top-right corner and exact numbers are in the hover tooltips |
+| **Context length distribution** | How long are my requests? How much of the usage sits in long contexts? | billed input binned into the six tiers the market actually bills by input length — `[0,8K)` / `[8K,32K)` / `[32K,128K)` / `[128K,256K)` / `[256K,512K)` / `[512K,∞)`; the boundaries line up with Alibaba Cloud / Volcano Engine / Zhipu's input-length tiers (32K / 128K / 256K) and MiniMax's 512K cut, while 4K / 8K / 16K are tiers no vendor sets. The top bucket is `[512K,∞)` rather than a further 1M cut, because 1M is already the largest context window any model offers — a single request's prompt cannot exceed it, so that cell would always be empty. Each row is label + share bar + call count, with the detail (in / out / cached) on a second line, and the peak bucket in the card corner |
+| **Trend (weekly)** | Is this week heavier than last? | calls / input / output as four columns grouped by natural week (Monday-based); weekly totals always add up to the grand total (the weekly view is folded from the daily series — a single source of truth, so the two can never drift apart) |
+| **Models** | Which model carries the usage? | a usage-share ranking by `provider/model` pair, sitting next to the workspace card. Each row is label + share bar + call count + `in · out · cached`; the same model under two providers takes two rows (that is the composite-key definition, not duplication); samples with no route land in an **Unattributed** row placed last, so the rows always add up to the grand total. **No cost accounting**: no amounts, no price table, no "no price configured" |
+| **Workspaces** | Which project carries the usage? | ranked by call count with share bars, labelled by the last two path segments (the full path is in the tooltip); a picker switches to a single workspace (subagent usage merges up the parent chain into the root workspace; fork seed prefixes are deduplicated, never double-counted) |
+| **Prompt restructure usage** | Is promptopt actually used — how often, and at what adoption rate? | promptopt's started / adopted / dismissed counts, adoption rate, and the character delta on adoption (the card is hidden when promptopt is not enabled) |
+
+> The context-distribution chart is an **observation surface, not a price list**: models such as OpenAI, Anthropic, DeepSeek, Kimi, Tencent Hunyuan Hy3, GLM-5.2/5.3 and qwen-max have no length-based tiering, so for them landing in `[128K,256K)` only says how long the request was — it does **not** mean a surcharge was applied.
 
 Narrow windows (main area under 900px) collapse to a single column; the refresh button in the top-right corner re-fetches even when the window and workspace are unchanged.
 
@@ -84,9 +87,37 @@ Restructures a spoken-style draft into input that is easier for a model to parse
 
 If the button does nothing or always errors after a DSH upgrade, check the host-contract list in the maintenance doc first.
 
+## Supported dsh versions
+
+| Host version | Status | How it is verified | Evidence |
+| --- | --- | --- | --- |
+| `0.2.1-rc.2` | **tested** | link-install, restart dsh web, reload the page and eyeball every plugin (tokprev preview line / every tokstats panel block / promptopt star button) | the PK-05 / PK-08 / PK-10 rows in `docs/INVARIANTS.md`; `node scripts/check-plugin-structure.js` |
+
+The declaration lives in `package.json` as `engines.dsh`, and its value is an **exact version, not a
+range**: the host evaluates compatibility from `engines.dsh` alone (the field suppresses
+`peerDependencies` for that decision), and **skips the whole bundle** when it does not match — recording
+it only in `skippedBundles` without printing anything. While the host is still in rc the vendor keeps the
+right to break contracts, so this pin fails closed instead of waving unverified versions through.
+`dsh.compatibility.dshReleases` describes the same fact (the host does not read it; it is for the plugin
+market and for readers).
+
+**If the plugin UI vanishes after a dsh upgrade**, first check whether this pin blocked the whole bundle:
+`node -e "console.log(require('./package.json').engines)"` against the host version. Once the checklist
+below passes on the new host, raise the pin and update "开发所对版本" in `docs/MAINTAINING.md`. The
+checklist matters because a drifted host contract shows up as a plugin that silently does nothing, never
+as an error:
+
+1. `node scripts/check-plugin-structure.js` → output contains `OK:` and zero `WARN` (PK-01 / PK-02 / PK-03 / PK-05 / PK-07 / PK-08 / PK-11 / PK-12 all live here);
+2. `npm test` → 0 fail (projection-unit shape, RPC envelope, dictionary key sets, degradation matrix);
+3. restart dsh web → reload → eyeball every plugin (only a human can do this step; the first two do not cover "the slot registered but nothing rendered").
+
 ## Installation (web profile)
 
 Prerequisites: Node.js, git, pnpm (`npm i -g pnpm`). Private repos work too (pnpm uses your local git credentials).
+
+> **Install from GitHub only**. The `dsh-plugins` name on npm belongs to **somebody else** (a plugin
+> market CLI unrelated to this project), so `add dsh-plugins` installs the wrong package; this pack is
+> not published to any registry.
 
 ```powershell
 # Install from GitHub (other users)
@@ -103,7 +134,6 @@ After installing, **restart the dsh web process** and reload the page (profile c
 Install location: `$DSH_HOME/profiles/web/` (default `~/.dsh`). `dsh plugin` is a pnpm forwarder:
 after install it automatically attaches packages declaring `dsh.bundle` to the `dsh.profile.bundles` layer list — no manual config edits.
 This pack has no build scripts, so git installs never trip pnpm's build-script gate (allowBuilds).
-If published to npm, `npx @deepseek-ai/dsh plugin --profile web add dsh-plugins` works the same way.
 
 ## Update / uninstall / toggling a single plugin
 

@@ -22,7 +22,10 @@ git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # 必做：#vX.Y.Z 固定安�
 **打 tag 前的硬门槛**：link 安装目标提交 -> 重启 dsh web -> 刷新页面，目检**每个插件**的 UI 元素实际渲染。"启动无报错 ≠ 插件正常工作"——slot 注册是副作用，apply 提前返回或抛错都可能静默失效。目检不过不打 tag。
 
 推上去即可被安装，无需注册表。`files` 字段保证打包形态（git 安装 / npm 安装都走打包）只带运行必需件加文档：
-`lib/` + `cordis.patch.yml` + `AGENTS.md` / `CHANGELOG.md` / `docs/MAINTAINING.md` / `docs/INVARIANTS.md`（README / LICENSE / package.json 由打包器自动附带，不必列）。
+`lib/` + `icon.svg` + `cordis.patch.yml` + `AGENTS.md` / `CHANGELOG.md` / `docs/MAINTAINING.md` / `docs/INVARIANTS.md`（README / LICENSE / package.json 由打包器自动附带，不必列）。
+`icon.svg` **必须**在 `files` 里：`package.json` 的 `icon` 指向它，宿主按包内相对路径读成 data URL 内联；漏了只会在插件元数据里留一条 `meta.error`，界面表现是「没有图标」而不是报错。
+
+**本包只从 GitHub 分发**：不要在任何文档里写「从 npm 装 `dsh-plugins`」——npm 上那个名字是别人的包，见下节「分发与元数据纪律」。
 
 **`docs/INVARIANTS.md` 必须进包**：AGENTS.md 的路由表指向它，包内若缺这份文件，装包者拿到的就是一张指空的必读清单。同理，AGENTS.md 里不得再引用 `docs/specs/`（本地 gitignored，不随包分发）——需要引证据时引 `docs/INVARIANTS.md` 的行号。
 
@@ -87,10 +90,17 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
 - **汇总**：面板打开时经 RPC 现算。逐会话先 `cachedSnapshot(meta, ["dsh-plugins.tokstats"])`（零 I/O），取不到才 `readSession` + `coldSnapshot` 冷折叠兜底。**活会话（`record.live === true`）跳过缓存**直接冷读——官方检查点可能滞后于日志且其 `asOfSeq` 无法与调用方稍后打开的日志关联（实测踩到 fork 会话少报 80%）。根工作区在汇总侧按 `listSessions()` 的 header 链解析（`init` 拿不到 headersById）。
 - **汇总输出形状**（RPC `summary` 端点返回值，面板唯一消费面）：
   ```
-  { buckets[6], daily[], weekly[], routes[], workspaces[], totals, windowStart, windowDays, generatedAt, workspace? }
+  { buckets[6], daily[], weekly[], routes[], workspaces[], totals, windowStart, windowDays, generatedAt, workspace?,
+    coverage: { sessions, skipped }, epoch: { end, calls } | null }
   totals / 每个 daily 行 / 每个 route 行 / 每个 workspace 行：{ calls, in, cr, cw, out }
   route 行额外带 rt；未标注行的 rt 是空串
   ```
+  - **`coverage` 与 `epoch` 是本变更新增的两个纯增量字段**（TS-21 / TS-22），语义分别是「这次请求的覆盖率」与「本次聚合是否把折叠历史并入了某个代表日」：
+    - `coverage.sessions = entries.length`（每个通过 `header.id` 校验的会话），`coverage.skipped` = 其中 `summary === undefined` 的条数（日志读不出来）。恒等约束：`sessions - skipped` 必须等于实际贡献了数字的会话数。
+    - `coverage.priced` **刻意不存在**：PK-09 禁止成本维度，这里显式记一笔防止日后误加。
+    - `epoch` 无折叠历史时**必须是 `null`**（不是 `{}`、不是 `undefined`）——client 用 `!== null` 判定，形状模棱两可会让 client 走进「有折叠」分支去读 `end`。`end` 是 epoch 区间的末端，代表日由 client 算 `end - 1`（与 host 的 `tokstatsDayBefore` 同口径）；`calls` 是所有经 epoch 路径计入的调用数，只用于 tooltip 说明。
+    - **两个字段都不进投影状态**（不在 `state` / `wire.view` 里），因此**不抬 `stateVersion`、不需要清缓存**——这正是 TS-03 举的反例：只给聚合输出加字段不需要抬版本。`wire.view` 键集仍必须是 `w` / `e` / `rows`，那条既有断言若变红说明字段被误塞进状态。
+    - 旧 host 消费方（读不到这两个字段）不受影响：纯增量、可缺省，client 走 `undefined` 分支（与 `routes` / `daily` 同一手法）；新 client + 旧 host 时整句不渲染、不打标、不抛错。
   - `daily` 是**时间维度的唯一真源**：`weekly` 由它按自然周（周一）归并，不再独立遍历明细——两趟各自过滤 epoch 与窗口时，任一处漏条件都会让「周合计 ≠ 日合计」只能靠人工对账发现。现在周合计之和恒等于 `totals`。
   - `workspaces` 与 `routes` 都按各自键**累加**合并（同工作区多会话是常态：fork 与并行对话；同 rt 也可能出现在多个会话）。v0.6.0 曾在 `workspaces` 上用 `set()` 覆盖，后一个会话整段盖掉前一个；v0.7.0 修。`routes` 是同一形状的同一个坑，实现时直接按累加写。
   - `routes` 排序写死两步：`calls` 降序；空串「未标注」**显式排最后**（空串在字典序里最前，直接按 `rt` 排会与界面直觉相反）；其余同次数时按 `rt` 字典序，保证输出完全确定。**epoch 的合计同时计入 `routes`**，否则排行会随窗口推进悄悄少行。
@@ -141,10 +151,19 @@ DSH 升级后若按钮点了没反应或一直报错，先对照这些契约—�
 
 v0.5.0 起初把 promptopt 放在 `conversation.composer.dock`（与 tokprev 预告行同带），实际用起来发现 dock 是宿主契约标注的「环境读数带」、可点控件本就该在 tool row——v0.5.1 挪到 `conversation.input.right` 符合「发送前顺手点」的操作逻辑。
 
+## 分发与元数据纪律
+
+- **本包没有发布到任何 registry，只能从 GitHub 安装**。npm 上的 `dsh-plugins@0.1.2` 是 MeCKodo 的插件市场 CLI（bin `dsp`），与本项目无关；dshfind 等索引已把两者混成一条记录（og:description 是本项目文案，Version / 安装命令指向别人的包）。
+  - 因此**任何文档都不得写「从 npm 装 `dsh-plugins`」**——照做会装上别人的包，且失败时表现为「插件没生效」而不是「装错了」。README 中英已删掉该句并改成显式警告。
+  - 包名改 scoped（`@plusqi/dsh-plugins` 实测 404 空闲）作为**独立决策**待维护者裁决，不在本变更内：爆炸半径是 10 个文件（`lib/client.js` 15 行 / `lib/index.js` 19 行 / guard 11 行 / 5 个测试文件 15 行 / `cordis.patch.yml` 6 行 / `package.json` 1 行），guard 三处硬编码（`row.name` / `ns` 前缀 / `data-plugin-css` 前缀），且改投影单元 key 会让所有旧缓存作废（需冷折叠一次）。
+- **`engines.dsh` 写精确版本，不写区间**。宿主 `evaluatePluginCompatibility` 的判定是：**有 `engines.dsh` 时它单独决定、忽略 `peerDependencies`**；不满足就整包跳过（`loadProfileDirectory` 把它记进 `skippedBundles`，**不打印任何东西**）。写一条没实测过的区间等于替未知版本放行，而 rc 阶段官方保留破坏权。当前 pin 是 `0.2.1-rc.2`；升级宿主后按 README「支持的 dsh 版本」的三步重验，再抬 pin 并同步本文件「开发所对版本」。
+  - `dsh.compatibility.dshReleases` 是**描述性**元数据（宿主运行时不读它，供插件市场与读者查），只列实测过的版本。它和 `engines.dsh` 必须表达同一事实，不能一个说兼容、另一个把整包挡掉。
+- **`icon` 字段**：值是包内相对路径（绝对路径与 `file:` 之类的 scheme 会被宿主拒绝），宿主按 SVG/PNG/JPEG/WebP 读成 data URL 内联，**上限 256 KiB**，且必须留在 manifest 所在目录内。当前 `icon.svg` 与侧栏图标同一造型、单色 `currentColor`。`files` 必须含它，否则 git 安装后读不到（宿主此时只回一条 `meta.error`，界面表现为没图标）。
+
 ## 维护须知
 
 - **无构建步骤**：`lib/client.js` 即最终产物（纯 JS，不用 TS/JSX，React 经 ModuleLoader 注入）。改动 = 编辑 + 重启。`lib/index.js`（host 半边）同为纯 JS：只 import `node:` 内建（fs/os/path），不引 npm 运行时依赖。
 - **兼容面**：tokprev 依赖 UI slot `conversation.composer.dock` 与投影字段 `contextPressure`；tokstats 依赖 `main` + `sidebar.panellist` slot、`ctx.sessionProjections`、`ctx.sessionQuery` 与 `ctx.sessionProjectionCache`；promptopt 依赖 `conversation.input.right` slot、`InputActions.setDraft`、`ctx.connection.rpc.call`、`ctx.connection.rpc.handle`、`ctx.llm` 与 `ctx.storageDomain`（明细见上节）。界面文案另依赖客户端服务 `ctx.locale`（注册词典 + slot 注册声明 `locale` 命名空间取得 `t` 席位）——它是硬依赖，缺席时整包不加载。DSH 升级后若插件消失，先对照这些契约。所有读取路径均带优雅降级（拿不到数据渲染 null，不会报错）。
-- **开发所对版本**：DSH `@deepseek-ai/dsh 0.2.1-rc.2`。host 侧是**一次性压多个深契约**（`InputActions` / `connection.rpc` / `llm.stream` / `sessionProjections` / `sessionQuery` / `sessionProjectionCache` / `storageDomain`），且 rc 阶段官方保留破坏权——升级后优先重验：RPC 信封形状（成功必须是 `{ ok: true, value }`，错误码取自宿主闭集）、`GenerateOptions` 的 `provider` / `model` 是否仍必填、`connection.rpc.handle` 的签名（**0.2.1-rc.2 起只有两参，旧的 `options.authority` 已不存在**）、投影单元的 `init(header, inheritedEventCount)` 与 `wire` 读取面、`sessionQuery` 的 `listSessions` / `readSession` 返回形状、`storageDomain.open()` 是否仍接受手写 spec。
+- **开发所对版本**：DSH `@deepseek-ai/dsh 0.2.1-rc.2`（`package.json` 的 `engines.dsh` 钉的就是它；宿主版本号从 `@deepseek-ai/dsh-app-boot/package.json` 读，与 `dsh-runtimes/*/runtime.json` 的 `desktopVersion` 一致）。host 侧是**一次性压多个深契约**（`InputActions` / `connection.rpc` / `llm.stream` / `sessionProjections` / `sessionQuery` / `sessionProjectionCache` / `storageDomain`），且 rc 阶段官方保留破坏权——升级后优先重验：RPC 信封形状（成功必须是 `{ ok: true, value }`，错误码取自宿主闭集）、`GenerateOptions` 的 `provider` / `model` 是否仍必填、`connection.rpc.handle` 的签名（**0.2.1-rc.2 起只有两参，旧的 `options.authority` 已不存在**）、投影单元的 `init(header, inheritedEventCount)` 与 `wire` 读取面、`sessionQuery` 的 `listSessions` / `readSession` 返回形状、`storageDomain.open()` 是否仍接受手写 spec。
 - **开发循环**：先用动态 Cordis 插件（`cordis_define` -> `cordis_run`）在会话内热迭代原型，满意后落入本包。
 - **单插件开关的真实语义**：`disabled: true` 只摘除该行的 **host 侧** fiber，浏览器侧 bundle 是否加载取决于**包内是否还有任一行存活**（DSH 的 boot graph 按包名判活，客户端每包一个 fiber、无条件注册全部插件）。对 tokstats 这类 host 半边有实际工作的插件，禁用行即停掉聚合器与统计（客户端按钮还在但无数据）；对 tokprev 这类纯 UI 插件，禁用一行**不会**移除其浏览器 UI（tokstats 行会让整个 bundle 存活）。需要按插件独立开关，请把该插件独立成包（见「新增插件」末尾）。
