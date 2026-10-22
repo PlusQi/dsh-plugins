@@ -703,6 +703,70 @@ test("排行行形状：与 workspaces 同形状（rt + 四桶 + calls），不�
 });
 
 
+// ── TS-19：检查点滞后补偿 ────────────────────────────────────────────────────
+//
+// 背景（本机实测）：官方检查点可以停在远早于日志末尾的水位，而 listSessions 不
+// 提供日志长度信号。实测 50 个会话里 11 个滞后，最严重的缓存 seq=793 而日志末
+// 序号 162925；面板因此少报 172 次调用 / 3129 万计费输入。这组用例钉住补偿逻辑。
+
+test("TS-19：冷读后若缓存水位低于已见日志末序号，下一次汇总改为冷读覆盖", async () => {
+	const connection = makeConnection();
+	// 第一次：缓存未命中 → 冷读，coldAsOfSeq 是日志末序号 2，建立基线
+	const cache = makeProjectionCache({}, { coldAsOfSeq: 2 });
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(cache.calls.coldSnapshot, 1, "首次必然冷读");
+
+	// 模拟真实缺陷形态：缓存行存在但水位停在 0（远早于日志末尾 2）。
+	// 真实场景里这是「官方检查点没追上日志」，实测最严重的一个会话差 162132。
+	cache.setCachedAsOfSeq(0);
+	cache.calls.coldSnapshot = 0;
+	cache.calls.cachedSnapshot = 0;
+	const second = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(second.ok, true);
+	assert.equal(cache.calls.cachedSnapshot, 1, "仍先尝试零 I/O 读缓存");
+	assert.equal(cache.calls.coldSnapshot, 1, "水位低于已见日志末序号 → 冷读覆盖（TS-19）");
+});
+
+test("TS-19：缓存水位追平已见日志末序号时仍走零 I/O（不误伤缓存路径）", async () => {
+	// 先用「缓存未命中」建立冷读基线（日志末序号 2），再让缓存水位等于 2 看是否
+	// 保持零 I/O。基线必须真的来自冷读——直接给缓存行的话首次请求就命中缓存，
+	// 记忆为空、判定不触发，测不到「追平后不误伤」这一点。
+	const connection = makeConnection();
+	const cache = makeProjectionCache({}, { coldAsOfSeq: 2 });
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(cache.calls.coldSnapshot, 1, "首次冷读建立基线（日志末序号 2）");
+
+	// 让缓存水位追平基线：asOfSeq = 2 不再低于已见的 2 → 不得冷读
+	cache.setCachedAsOfSeq(2);
+	cache.calls.coldSnapshot = 0;
+	const second = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(second.ok, true);
+	assert.equal(cache.calls.coldSnapshot, 0, "水位已追平 → 保持零 I/O，不得退化成每次冷读");
+});
+
+test("TS-19：verifyStale=false 时不建立基线，直接采信缓存（退回旧行为）", async () => {
+	// 关闭校验后行为必须与改动前完全一致：首轮就零 I/O、不读日志。
+	// 这条给「宁可秒开也不接受首次冷读」的部署留出口。
+	const connection = makeConnection();
+	const cache = makeProjectionCache({
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 3, calls: 2, in: 200000, cr: 0, cw: 0, out: 90 }] } },
+	});
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx, { verifyStale: false });
+	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(result.ok, true);
+	assert.equal(cache.calls.coldSnapshot, 0, "关闭校验后首轮不得冷读");
+	assert.equal(query.calls.readSession, 0, "关闭校验后首轮不得读日志");
+	assert.equal(result.value.buckets[3].calls, 2, "数字直接来自缓存");
+});
+
 // ── 阶段 2：单元注册 / 汇总 / 降级 ──────────────────────────────────────────
 
 /**
@@ -740,10 +804,14 @@ function makeSessionQuery(records, logsById) {
  * coldSnapshot 真的把日志折一遍（走同一套纯函数），这样「冷折叠兜底」测的是真实
  * 折叠语义而不是桩返回的常量。
  */
-function makeProjectionCache(cachedById) {
+function makeProjectionCache(cachedById, opts = {}) {
 	const calls = { cachedSnapshot: 0, coldSnapshot: 0 };
+	const coldAsOfSeq = opts.coldAsOfSeq ?? -1;
 	const stub = {
 		calls,
+		/** 让用例在两次请求之间改缓存水位（模拟官方 flush 追上日志）。 */
+		setCachedAsOfSeq(value) { stub.cachedAsOfSeqValue = value; },
+		cachedAsOfSeqValue: opts.asOfSeq ?? 0,
 		cachedSnapshot(meta, keys) {
 			calls.cachedSnapshot += 1;
 			const keyed = cachedById[meta.id];
@@ -752,13 +820,22 @@ function makeProjectionCache(cachedById) {
 			for (const key of keys ?? []) {
 				if (keyed[key] !== undefined) values[key] = keyed[key];
 			}
-			return Object.keys(values).length === 0 ? undefined : { asOfSeq: 0, values };
+			return Object.keys(values).length === 0 ? undefined : { asOfSeq: stub.cachedAsOfSeqValue, values };
 		},
 		coldSnapshot(meta, inheritedEventCount, events) {
 			calls.coldSnapshot += 1;
 			let state = tokstatsInit(meta, inheritedEventCount);
 			for (const event of events) state = tokstatsFoldUsage(state, event, 90);
-			return { asOfSeq: -1, values: { [TOKSTATS_KEY]: tokstatsDefinition(90).wire.view(state) } };
+			const view = tokstatsDefinition(90).wire.view(state);
+			// 真实 coldSnapshot 会把结果写回缓存（官方 coldSnapshot 的写回语义）。
+			// 桩必须照做：否则「冷读之后下一次走零 I/O」这条路径根本测不到。
+			cachedById[meta.id] = { [TOKSTATS_KEY]: view };
+			// 写回水位 = events 的最大 seq（与实现侧的基线口径一致，TS-19）。
+			// 用 coldAsOfSeq 会让「追平」用例构造不出正确水位。
+			const maxSeq = events.reduce((a, e) => (typeof e?.seq === "number" && e.seq > a ? e.seq : a), -1);
+			const writeSeq = opts.coldAsOfSeq ?? maxSeq;
+			stub.cachedAsOfSeqValue = writeSeq;
+			return { asOfSeq: writeSeq, values: { [TOKSTATS_KEY]: view } };
 		},
 	};
 	return new Proxy(stub, {
@@ -953,12 +1030,23 @@ test("AC-7：cachedSnapshot 命中时零 I/O 读回摘要（不触发 coldSnapsh
 	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
 	startTokstats(ctx);
+	// TS-19 起首轮要冷读一次建立基线（否则无从判断缓存是否滞后），所以「零 I/O」
+	// 的准确表述是「**建立基线之后**的汇总零 I/O」。这正是面板日常使用（同进程内
+	// 重复打开）的形态。
+	await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(cache.calls.coldSnapshot, 1, "首轮冷读一次建立基线（TS-19）");
+	const readAfterFirst = query.calls.readSession;
+	assert.equal(readAfterFirst, 1, "首轮读一次日志");
+	cache.calls.coldSnapshot = 0;
+	cache.calls.cachedSnapshot = 0;
 	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(result.ok, true);
 	assert.equal(cache.calls.coldSnapshot, 0, "缓存命中不得触发冷折叠");
-	assert.equal(query.calls.readSession, 0, "缓存命中不得读日志");
-	assert.equal(result.value.buckets[3].calls, 2);
-	assert.equal(result.value.buckets[3].out, 90);
+	assert.equal(query.calls.readSession, readAfterFirst, "缓存命中不得再读日志");
+	// 数字来自缓存（首轮冷读已把真实折叠值写回）：sampleLog 两次调用
+	// —— 1000 落桶 0、200000 落桶 3。
+	assert.equal(result.value.totals.calls, 2);
+	assert.equal(result.value.buckets[3].calls, 1);
 });
 
 test("冷折叠兜底：缓存未命中时 readSession + coldSnapshot，数字与折叠一致", async () => {
@@ -1041,7 +1129,8 @@ test("RPC 入参：windowDays 透传并影响窗口过滤", async () => {
 		},
 	});
 	const { ctx } = makeCtx({ connection, sessionQuery: makeSessionQuery([{ header: HEADER }], {}), sessionProjectionCache: cache });
-	startTokstats(ctx);
+	// 这条只测 windowDays 透传，不测滞后判定：关掉校验以保持「首轮即读缓存」。
+	startTokstats(ctx, { verifyStale: false });
 	// 注：windowDays 是「近 N 天」，故 0 表示全部、365 才覆盖到 1 月。
 	const wide = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, { windowDays: 0 });
 	assert.equal(wide.value.totals.calls, 6, "windowDays: 0 = 全部");
@@ -1062,7 +1151,7 @@ test("RPC 入参：windowDays 非正数回落行配置；workspace 透传", asyn
 		sessionQuery: makeSessionQuery([{ header: HEADER }, { header: other }], {}),
 		sessionProjectionCache: cache,
 	});
-	startTokstats(ctx);
+	startTokstats(ctx, { verifyStale: false });
 	const filtered = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, { workspace: other.cwd });
 	assert.equal(filtered.value.totals.calls, 4);
 	assert.equal(filtered.value.workspace, other.cwd);
@@ -1085,7 +1174,7 @@ test("行 config.windowDays 生效（缺省 90）", async () => {
 		},
 	});
 	const { ctx } = makeCtx({ connection, sessionQuery: makeSessionQuery([{ header: HEADER }], {}), sessionProjectionCache: cache });
-	startTokstats(ctx, { windowDays: 10 });
+	startTokstats(ctx, { windowDays: 10, verifyStale: false });
 	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(result.value.windowDays, 10);
 	assert.equal(result.value.totals.calls, 1, "10 天窗口滤掉 1 月的格子");
@@ -1116,7 +1205,7 @@ test("E1 折叠区间在读取期排除，避免与 epoch 合计双计", async (
 		sessionQuery: makeSessionQuery([{ header: HEADER }], {}),
 		sessionProjectionCache: cache,
 	});
-	startTokstats(ctx);
+	startTokstats(ctx, { verifyStale: false });
 	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, { windowDays: 0 });
 	assert.equal(result.value.totals.calls, 3, "区间内明细跳过、epoch 按桶合计计入（不双计）");
 	assert.equal(result.value.buckets[1].calls, 2, "epoch 的桶粒度必须保住");
@@ -1206,7 +1295,7 @@ test("非活会话仍走缓存（零 I/O 路径不被上一条改坏）", async 
 	});
 	const query = makeSessionQuery([{ header: HEADER, live: false }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
-	startTokstats(ctx);
+	startTokstats(ctx, { verifyStale: false });
 	const result = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
 	assert.equal(cache.calls.cachedSnapshot, 1, "已结束会话应命中缓存");
 	assert.equal(query.calls.readSession, 0);
