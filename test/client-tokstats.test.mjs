@@ -17,11 +17,12 @@ import {
 	assertDictPair,
 	makeRpcStub,
 } from "./client-harness.mjs";
+import { TOKSTATS_BUCKET_BOUNDS } from "../lib/index.js";
 
 const NS = "dsh-plugins.tokstats";
 const PANEL_ID = "tokstats";
 const CHANNEL = "/dsh-plugins.tokstats";
-const TOKSTATS_LABELS = ["[0,4K)", "[4K,8K)", "[8K,16K)", "[16K,32K)", "[32K,64K)", "[64K,128K)", "[128K,∞)"];
+const TOKSTATS_LABELS = ["[0,8K)", "[8K,32K)", "[32K,128K)", "[128K,256K)", "[256K,512K)", "[512K,∞)"];
 
 // ── 测试装配 ───────────────────────────────────────────────────────────────
 
@@ -66,10 +67,12 @@ function panelPropsOf(rpc) {
 
 /** 一份合法的 RPC 聚合返回值（host 侧 tokstatsAggregate 的形状）。 */
 function makeSummary(overrides = {}) {
+	// 6 桶（对齐市面计费档，TS-18）：桶 0 = [0,8K)、桶 3 = [128K,256K)。
+	// 200000 落在桶 3；1000 + 3000 = 4000 落在桶 0。
 	const buckets = [];
-	for (let i = 0; i < 7; i += 1) buckets.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
+	for (let i = 0; i < 6; i += 1) buckets.push({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 });
 	buckets[0] = { calls: 2, in: 1000, cr: 3000, cw: 0, out: 200 };
-	buckets[6] = { calls: 1, in: 200000, cr: 0, cw: 0, out: 50 };
+	buckets[3] = { calls: 1, in: 200000, cr: 0, cw: 0, out: 50 };
 	return {
 		buckets,
 		// 日序列是周趋势的真源（v0.7.0）：两格都落在 2026-10-19 那一周。
@@ -208,7 +211,7 @@ test("面板打开时发一次 RPC（channel / endpoint / 缺省窗口）", asyn
 	assert.ok(tree !== null);
 });
 
-test("AC-9：桶分布 7 行全渲染，非零桶显示数值、零桶显示破折号", async () => {
+test("AC-9：桶分布 6 行全渲染，非零桶显示数值、零桶显示破折号", async () => {
 	const rpc = makeRpcStub();
 	rpc.respond(() => ({ ok: true, value: makeSummary() }));
 	const { react, main, t } = setupClient({ rpc });
@@ -222,8 +225,40 @@ test("AC-9：桶分布 7 行全渲染，非零桶显示数值、零桶显示破�
 	const dimBuckets = nodes.filter((n) => typeof n.props.className === "string"
 		&& /dsh-tokstats-dim/.test(n.props.className)
 		&& TOKSTATS_LABELS.some((label) => textOf(n).startsWith(label)));
-	assert.equal(dimBuckets.length, 5, "零桶行加 dim（5 个空桶）");
+	assert.equal(dimBuckets.length, 4, "零桶行加 dim（4 个空桶）");
 	assert.ok(textOf(tree).includes("—"), "零桶显示破折号");
+});
+
+test("桶标签与 host 侧边界逐项对齐（TS-18：改一边必须改另一边）", async () => {
+	// client 的标签数组是纯记号、不进词典（AGENTS 规则 7），因此没有别的机制
+	// 保证它与 host 的 TOKSTATS_BUCKET_BOUNDS 同步：两边各自写死，漏改一边的
+	// 症状是「面板显示的区间与实际落桶不是同一个」——不报错，只是数字说谎。
+	// 这条用例是唯一把它们钉在一起的地方。
+	//
+	// **期望值由 host 边界生成、实际值从渲染树取**，两个方向都不能偷懒：
+	// - 期望值写成字面量时，改 host 边界（如把 1M 改成 2M）用例照样绿；
+	// - 实际值取本文件的 TOKSTATS_LABELS 常量时，改 client 的标签用例照样绿。
+	// 两次反向验证各抓到过其中一种假绿，故这里两头都掐死。
+	const human = (n) => (n >= 1048576 ? String(n / 1048576) + "M" : String(n / 1024) + "K");
+	const expected = [];
+	for (let i = 0; i <= TOKSTATS_BUCKET_BOUNDS.length; i += 1) {
+		const lo = i === 0 ? "0" : human(TOKSTATS_BUCKET_BOUNDS[i - 1]);
+		const hi = i === TOKSTATS_BUCKET_BOUNDS.length ? "∞" : human(TOKSTATS_BUCKET_BOUNDS[i]);
+		expected.push("[" + lo + "," + hi + ")");
+	}
+
+	// 实际渲染出来的标签（不是常量）：桶行标签是 meterLabel 节点的文本。
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const rendered = nodesOf(tree)
+		.filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-meterLabel")
+		.map((n) => textOf(n))
+		.filter((label) => label.startsWith("["));
+	assert.deepEqual(rendered, expected, "面板渲染出的桶区间必须逐项等于 host 边界（下界与上界都比）");
+	// 测试文件里的常量也不能漂：其它用例（AC-9 / 桶行明细）靠它定位行。
+	assert.deepEqual(TOKSTATS_LABELS, expected, "测试常量与 host 边界一致");
 });
 
 test("桶行：计数与四桶明细分两行（条形图长度不被长数值挤压）", async () => {
@@ -232,8 +267,8 @@ test("桶行：计数与四桶明细分两行（条形图长度不被长数值�
 	const { react, main, t } = setupClient({ rpc });
 	const tree = await renderPanel(react, main, { t });
 	const meters = nodesOf(tree).filter((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-meter");
-	const bigBucket = meters.find((n) => textOf(n).startsWith("[128K,∞)"));
-	assert.ok(bigBucket, "最高桶行应存在");
+	const bigBucket = meters.find((n) => textOf(n).startsWith("[128K,256K)"));
+	assert.ok(bigBucket, "非零桶行应存在");
 	const value = nodesOf(bigBucket).find((n) => n.props.className === "dsh-tokstats-meterValue");
 	const detail = nodesOf(bigBucket).find((n) => n.props.className === "dsh-tokstats-meterDetail");
 	assert.equal(textOf(value), "1 次", "数值列只放计数");
@@ -325,7 +360,7 @@ test("降级：传输抛异常时显示空态，不抛错", async () => {
 test("空数据：buckets 全零时显示「暂无数据」", async () => {
 	const rpc = makeRpcStub();
 	rpc.respond(() => ({ ok: true, value: makeSummary({
-		buckets: Array.from({ length: 7 }, () => ({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 })),
+		buckets: Array.from({ length: 6 }, () => ({ calls: 0, in: 0, cr: 0, cw: 0, out: 0 })),
 		daily: [],
 		weekly: [],
 		workspaces: [],

@@ -27,6 +27,7 @@ import {
 	tokstatsWindowStart,
 	TOKSTATS_KEY,
 	TOKSTATS_STATE_VERSION,
+	TOKSTATS_BUCKET_BOUNDS,
 	TOKSTATS_BUCKET_COUNT,
 	TOKSTATS_CHANNEL,
 	TOKSTATS_ENDPOINT,
@@ -112,13 +113,13 @@ test("I5：递进采样（多个 usage chunk）只留最后一个", () => {
 });
 
 test("I5：终值替换跨桶时旧格被正确减回（不残留空格）", () => {
-	// chunk 落在 [0,4K)，message 终值 200000 落在 [128K,∞)：减旧加新必须把旧格清掉。
+	// chunk 落在 [0,8K)，message 终值 200000 落在 [128K,256K)：减旧加新必须把旧格清掉。
 	const state = fold([
 		chunkEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, outputTokens: 10 }),
 		messageEvent(1, T(26, 10, 0), 1, 1, { inputTokens: 200000, outputTokens: 20 }),
 	]);
 	assert.equal(state.rows.length, 1, "旧桶的空格必须被剔除");
-	assert.equal(state.rows[0].b, 6, "终值落在最高桶");
+	assert.equal(state.rows[0].b, 3, "终值落在 [128K,256K)");
 	assert.equal(state.rows[0].calls, 1);
 });
 
@@ -149,24 +150,44 @@ test("I4：seed 为 0 时全部计入（非 fork 会话）", () => {
 	assert.equal(state.rows[0].calls, 2);
 });
 
-test("桶边界：2 的幂对数桶（4096 / 8192 / 200000 三点必测）", () => {
-	assert.equal(TOKSTATS_BUCKET_COUNT, 7);
+test("桶边界：对齐市面计费档，且与 stateVersion 同批变更（TS-18）", () => {
+	// 边界不是 2 的幂，而是市面「按输入长度分档计费」的真实档位：32K / 128K / 256K
+	// 是中国区主力厂商（阿里云百炼 / 火山方舟 / 智谱 GLM）重叠的边界，512K 是
+	// MiniMax M3 的分界（≤512K / >512K 两档）；4K / 8K / 16K 没有任何厂商设档
+	// （旧方案的 [4K,8K) 在本机真实调用中是完全空桶）。
+	//
+	// **最高桶是 [512K,∞)、不设 1M 上界**：1M 已是市面所有模型上下文窗口的最大值
+	// （本机 profile 的 contextWindow 最大就是 1048576），单请求 prompt 结构上超不过
+	// 它。本机真实调用实测最大计费输入 710.9K、≥1M 的 0 次，所以 [1M,∞) 是一条
+	// 永远不会亮的尾巴，已删除。
+	//
+	// **这条用例同时钉边界数组与 stateVersion**：cell 只存桶序号 `b`，边界一变同一个
+	// `b` 就指向另一个区间，不抬版本会静默错位而不是报错。改任一半都必须显式改另一半。
+	assert.deepEqual(TOKSTATS_BUCKET_BOUNDS, [8192, 32768, 131072, 262144, 524288]);
+	assert.equal(TOKSTATS_BUCKET_COUNT, 6);
+	assert.equal(TOKSTATS_STATE_VERSION, 6, "桶边界改为市面计费档（含 512K 细分、去掉恒空的 1M 尾巴）→ 旧缓存行必须作废（TS-18）");
+
+	// 每个边界两侧各测一点，另加最高桶的尾巴。
 	assert.equal(tokstatsBucketOf(0), 0);
-	assert.equal(tokstatsBucketOf(4095), 0);
-	assert.equal(tokstatsBucketOf(4096), 1);
-	assert.equal(tokstatsBucketOf(8191), 1);
-	assert.equal(tokstatsBucketOf(8192), 2);
-	assert.equal(tokstatsBucketOf(16384), 3);
-	assert.equal(tokstatsBucketOf(32768), 4);
-	assert.equal(tokstatsBucketOf(65536), 5);
-	assert.equal(tokstatsBucketOf(131072), 6);
-	assert.equal(tokstatsBucketOf(200000), 6);
+	assert.equal(tokstatsBucketOf(8191), 0, "8K 以下是最低桶");
+	assert.equal(tokstatsBucketOf(8192), 1);
+	assert.equal(tokstatsBucketOf(32767), 1);
+	assert.equal(tokstatsBucketOf(32768), 2);
+	assert.equal(tokstatsBucketOf(131071), 2);
+	assert.equal(tokstatsBucketOf(131072), 3);
+	assert.equal(tokstatsBucketOf(262143), 3);
+	assert.equal(tokstatsBucketOf(262144), 4);
+	assert.equal(tokstatsBucketOf(524287), 4, "256K–512K 与 ≥512K 必须是两桶");
+	assert.equal(tokstatsBucketOf(524288), 5);
+	assert.equal(tokstatsBucketOf(1048576), 5, "1M 落在最高桶 [512K,∞)，不再单独一档");
+	assert.equal(tokstatsBucketOf(200000), 3, "200K 落在 [128K,256K)");
+	assert.equal(tokstatsBucketOf(700000), 5, "700K 落在 [512K,∞)");
 });
 
 test("桶落点在 fold 里用 in+cr+cw 之和（缓存读也计入计费输入）", () => {
-	// in 1000 + cr 70000 → 71000 → 桶 5
+	// in 1000 + cr 70000 → 71000 → 落在 [32K,128K)（桶 2）
 	const state = fold([messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 1000, cacheReadTokens: 70000, outputTokens: 5 })]);
-	assert.equal(state.rows[0].b, 5);
+	assert.equal(state.rows[0].b, 2);
 });
 
 test("日键按本地时区自然日：23:59 与 00:01 分属两日", () => {
@@ -191,7 +212,7 @@ test("I7 / AC-5：E1 折叠不删原始明细，且汇总数字与折叠前一�
 	// epoch 保留「路由 × 桶」两维（A-5 / tks8-3a）：无 source 的样本归单一路由 ""。
 	assert.equal(epoch.epoch.routes.length, 1, "同一条路由只建一组");
 	assert.equal(epoch.epoch.routes[0].rt, "", "无 source 的样本归未标注路由");
-	// 计费输入 4000 < 4096 → 桶 0
+	// 计费输入 4000 < 8192 → 桶 0
 	assert.equal(epoch.epoch.routes[0].buckets[0].calls, 2, "窗口外的两格都折进 epoch 的桶 0");
 	assert.equal(epoch.epoch.routes[0].buckets[0].out, 18);
 
@@ -222,16 +243,16 @@ test("聚合：窗口过滤 + 工作区分组 + 周趋势分组", () => {
 		w: W_ALPHA,
 		e: null,
 		rows: [
-			{ d: "2026-10-19", b: 6, calls: 2, in: 200000, cr: 0, cw: 0, out: 10 },
-			{ d: "2026-10-20", b: 5, calls: 1, in: 70000, cr: 0, cw: 0, out: 5 },
+			{ d: "2026-10-19", b: 3, calls: 2, in: 200000, cr: 0, cw: 0, out: 10 },
+			{ d: "2026-10-20", b: 2, calls: 1, in: 70000, cr: 0, cw: 0, out: 5 },
 			{ d: "2026-06-01", b: 0, calls: 3, in: 100, cr: 0, cw: 0, out: 1 },
 		],
 	};
 	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 30, today: "2026-10-20" });
 	assert.equal(result.windowStart, "2026-09-21");
 	assert.equal(result.totals.calls, 3, "窗口外的 2026-06-01 不计");
-	assert.equal(result.buckets[6].calls, 2);
-	assert.equal(result.buckets[5].calls, 1);
+	assert.equal(result.buckets[3].calls, 2);
+	assert.equal(result.buckets[2].calls, 1);
 	assert.equal(result.buckets[0].calls, 0);
 	assert.equal(result.weekly.length, 1, "两周内三格落在同一自然周");
 	assert.equal(result.weekly[0].weekStart, "2026-10-19");
@@ -245,8 +266,8 @@ test("聚合：日序列按日升序、逐日四桶齐全（面板柱状图的�
 		w: W_ALPHA,
 		e: null,
 		rows: [
-			{ d: "2026-10-20", b: 5, calls: 1, in: 70000, cr: 0, cw: 0, out: 5 },
-			{ d: "2026-10-19", b: 6, calls: 2, in: 200000, cr: 100, cw: 7, out: 10 },
+			{ d: "2026-10-20", b: 2, calls: 1, in: 70000, cr: 0, cw: 0, out: 5 },
+			{ d: "2026-10-19", b: 3, calls: 2, in: 200000, cr: 100, cw: 7, out: 10 },
 			{ d: "2026-06-01", b: 0, calls: 3, in: 100, cr: 0, cw: 0, out: 1 },
 		],
 	};
@@ -269,10 +290,10 @@ test("周趋势由日序列归并：各周合计之和恒等于总计（单趟�
 		w: W_ALPHA,
 		e: null,
 		rows: [
-			{ d: "2026-10-19", b: 6, calls: 2, in: 200000, cr: 10, cw: 0, out: 10 },
-			{ d: "2026-10-20", b: 5, calls: 1, in: 70000, cr: 20, cw: 5, out: 5 },
+			{ d: "2026-10-19", b: 3, calls: 2, in: 200000, cr: 10, cw: 0, out: 10 },
+			{ d: "2026-10-20", b: 2, calls: 1, in: 70000, cr: 20, cw: 5, out: 5 },
 			// 跨周：2026-10-26 属于下一自然周（周一）
-			{ d: "2026-10-26", b: 4, calls: 4, in: 40000, cr: 30, cw: 0, out: 9 },
+			{ d: "2026-10-26", b: 2, calls: 4, in: 40000, cr: 30, cw: 0, out: 9 },
 		],
 	};
 	const result = tokstatsAggregate([{ rootWorkspace: W_ALPHA, summary }], { windowDays: 90, today: "2026-10-27" });
@@ -301,7 +322,6 @@ test("聚合：epoch 合计计入日序列（折叠前的历史仍能在柱状�
 					rt: "",
 					buckets: [
 						{ calls: 2, in: 5000, cr: 0, cw: 0, out: 20 },
-						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
 						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
 						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
 						{ calls: 0, in: 0, cr: 0, cw: 0, out: 0 },
@@ -392,7 +412,7 @@ test("单元定义：key / stateVersion / init / apply / wire 齐备", () => {
 	assert.equal(def.stateVersion, TOKSTATS_STATE_VERSION);
 	// AC-7 / I4：key 带包前缀，消除与宿主同名单元的撞车（Q5）。
 	assert.equal(TOKSTATS_KEY, "dsh-plugins.tokstats", "投影 key 必须是带包前缀的全名（I4）");
-	assert.equal(TOKSTATS_STATE_VERSION, 3, "由 2 提升（cell 加 rt + epoch 改结构），旧缓存行据此作废（I3 / Q9）");
+	assert.equal(TOKSTATS_STATE_VERSION, 6, "由 3、4、5 提升（桶边界改为市面计费档，含 512K 细分、去掉恒空的 1M 尾巴），旧缓存行据此作废（TS-18）");
 	assert.equal(typeof def.init, "function");
 	assert.equal(typeof def.apply, "function");
 	assert.ok(def.wire !== undefined, "必须带 wire（host-only 单元读不回来）");
@@ -864,7 +884,7 @@ test("单元注册：key/stateVersion 走 ctx.inject 软依赖", () => {
 	startTokstats(ctx);
 	assert.equal(state.registered.length, 1);
 	assert.equal(state.registered[0].key, TOKSTATS_KEY);
-	assert.equal(state.registered[0].stateVersion, 3);
+	assert.equal(state.registered[0].stateVersion, 6);
 });
 
 test("projection 缺席：不注册单元，且不抛错（I8）", () => {
@@ -928,7 +948,7 @@ test("AC-8：三种服务缺席各断言一次不抛错", () => {
 test("AC-7：cachedSnapshot 命中时零 I/O 读回摘要（不触发 coldSnapshot）", async () => {
 	const connection = makeConnection();
 	const cache = makeProjectionCache({
-		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 6, calls: 2, in: 200000, cr: 0, cw: 0, out: 90 }] } },
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 3, calls: 2, in: 200000, cr: 0, cw: 0, out: 90 }] } },
 	});
 	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
@@ -937,8 +957,8 @@ test("AC-7：cachedSnapshot 命中时零 I/O 读回摘要（不触发 coldSnapsh
 	assert.equal(result.ok, true);
 	assert.equal(cache.calls.coldSnapshot, 0, "缓存命中不得触发冷折叠");
 	assert.equal(query.calls.readSession, 0, "缓存命中不得读日志");
-	assert.equal(result.value.buckets[6].calls, 2);
-	assert.equal(result.value.buckets[6].out, 90);
+	assert.equal(result.value.buckets[3].calls, 2);
+	assert.equal(result.value.buckets[3].out, 90);
 });
 
 test("冷折叠兜底：缓存未命中时 readSession + coldSnapshot，数字与折叠一致", async () => {
@@ -951,8 +971,8 @@ test("冷折叠兜底：缓存未命中时 readSession + coldSnapshot，数字�
 	assert.equal(result.ok, true);
 	assert.equal(cache.calls.coldSnapshot, 1);
 	assert.equal(query.calls.readSession, 1);
-	// 200000 → 桶 6；1000 → 桶 0
-	assert.equal(result.value.buckets[6].calls, 1);
+	// 200000 → 桶 3（[128K,256K)）；1000 → 桶 0
+	assert.equal(result.value.buckets[3].calls, 1);
 	assert.equal(result.value.buckets[0].calls, 1);
 	assert.equal(result.value.totals.calls, 2);
 });
@@ -1149,7 +1169,8 @@ test("RPC 注册成功时往 stderr 留一行可检索记录（通道静默不�
 
 test("零 step 与真实 step 相邻时互不干扰", () => {
 	const state = fold([
-		messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 5000, outputTokens: 60 }),
+		// 20000 落在 [8K,32K)（桶 1），与零样本的最低桶（桶 0）必须分属两格。
+		messageEvent(0, T(26, 10, 0), 1, 1, { inputTokens: 20000, outputTokens: 60 }),
 		chunkEvent(1, T(26, 10, 1), 1, 2, { inputTokens: 0, outputTokens: 0 }),
 	]);
 	assert.equal(state.rows.length, 2, "两个不同桶各一格");
@@ -1166,7 +1187,7 @@ test("活会话跳过缓存：检查点滞后时不得采信（官方水位无�
 	const connection = makeConnection();
 	// 缓存里有陈旧值（calls=27），但日志已长出真实值（sampleLog 两次调用）
 	const cache = makeProjectionCache({
-		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 6, calls: 27, in: 100, cr: 0, cw: 0, out: 1 }] } },
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 3, calls: 27, in: 100, cr: 0, cw: 0, out: 1 }] } },
 	});
 	const query = makeSessionQuery([{ header: HEADER, live: true }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
@@ -1181,7 +1202,7 @@ test("活会话跳过缓存：检查点滞后时不得采信（官方水位无�
 test("非活会话仍走缓存（零 I/O 路径不被上一条改坏）", async () => {
 	const connection = makeConnection();
 	const cache = makeProjectionCache({
-		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 6, calls: 9, in: 100, cr: 0, cw: 0, out: 1 }] } },
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 3, calls: 9, in: 100, cr: 0, cw: 0, out: 1 }] } },
 	});
 	const query = makeSessionQuery([{ header: HEADER, live: false }], { [HEADER.id]: sampleLog(HEADER) });
 	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
