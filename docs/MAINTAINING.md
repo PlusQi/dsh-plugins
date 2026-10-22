@@ -81,6 +81,7 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
 - **折叠语义**：计费输入 = `in + cr + cw` 落**市面计费档 6 桶**（边界 `[8K, 32K, 128K, 256K, 512K]`，标签 `[0,8K)`…`[512K,∞)`；对齐厂商「按输入长度分档」的真实档位，**不是 2 的幂**）；`seq < seed` 的样本跳过（fork 前缀父会话已计过）；同 `(turn, step)` 的后一样本替换前一样本（差值法：先减旧再加新，**按 `(d, b, rt)` 定位**——旧采样与新采样可能落在不同路由，跨桶跨路由都正确）；无关事件返回同一引用（`Object.is` 成立）。
   - **桶边界与 `stateVersion` 必须同批变更（TS-18）**：cell 只存桶序号 `b`、不存区间，边界一变同一个 `b` 就指向另一个区间，只改边界不抬版本是**静默错位**而不是报错。边界数组（`TOKSTATS_BUCKET_BOUNDS`）与版本号钉在同一条测试断言里，改任一半都必须显式改另一半。
 - **E1 折叠**：窗口（`config.windowDays`，缺省 90）之外的明细按「桶 × 路由」加进 `epoch.routes: [{ rt, buckets[6] }]`，`rows` 本体不删不改；读取期按 `[epoch.start, epoch.end)` 排除明细并改计 epoch 合计，因此「折叠前后明细条数不变、各桶数字逐项一致、逐路由合计一致」三条同时成立。
+  - **面板的四个时间档位都只发 `windowDays` 一个入参**（TS-20）：近 7 天 = 7、近 30 天 = 30、全部 = 0，**「本月」= 当天日期数**——因为 `tokstatsWindowStart` 的定义是 `today - (windowDays - 1)`，取「今天是几号」代入即落在当月 1 日。不要为「本月」给 host 加第二种窗口口径：那样折叠窗口（`config.windowDays`，决定 epoch 边界）与读取窗口会出现两套语义，而 epoch 区间一旦与读取口径不一致就会双计或漏计。客户端侧的折算函数是 `tokstatsRangeDays`，与这里的式子由 `test/host-tokstats.test.mjs` 的 TS-20 用例跨模块钉住。
   - **内层字段名是 `buckets`**（沿用旧结构同名），外层是 `routes`。
   - **旧结构防御**：读到无 `routes` 但有 `buckets` 的 epoch 时，视为单一路由 `""` 的一组桶（`stateVersion` 抬升后旧缓存行本就会被丢弃，但 `tokstatsSummaryOf` 对 `e` 只校验 start/end，兜底成本极低）。
 - **汇总**：面板打开时经 RPC 现算。逐会话先 `cachedSnapshot(meta, ["dsh-plugins.tokstats"])`（零 I/O），取不到才 `readSession` + `coldSnapshot` 冷折叠兜底。**活会话（`record.live === true`）跳过缓存**直接冷读——官方检查点可能滞后于日志且其 `asOfSeq` 无法与调用方稍后打开的日志关联（实测踩到 fork 会话少报 80%）。根工作区在汇总侧按 `listSessions()` 的 header 链解析（`init` 拿不到 headersById）。

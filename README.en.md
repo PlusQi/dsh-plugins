@@ -11,7 +11,7 @@ All plugins live in a single pack (one repo = one profile bundle): install once 
 | Plugin      | Function                                                                                          |
 | ----------- | ------------------------------------------------------------------------------------------------- |
 | **tokprev** | Three-part preview below the Composer: next input · draft · est. output (only the draft increment the official ContextMeter cannot show) |
-| **tokstats** | "Token analytics" full panel in the sidebar: metric cards + daily calls + context-length distribution + weekly trend + model ranking + workspace ranking + promptopt usage, with 90-day / 30-day / all-time windows |
+| **tokstats** | "Token analytics" full panel in the sidebar: metric cards + daily calls + context-length distribution + weekly trend + model ranking + workspace ranking + promptopt usage, with 7-day / this-month / 30-day / all-time windows |
 | **promptopt** | Star-icon button in the composer's tool row (hover for the tooltip): restructure the draft faithfully into structured input, compare original vs. restructured, and **adopt** it into the input only if you like it |
 
 > **tokprev** is a pure interface plugin; **tokstats** and **promptopt** also ship a host-side half (one registers a session projection unit and aggregates, the other makes a single side-channel model call).
@@ -64,7 +64,7 @@ Same accounting as the host: billed input = `inputTokens + cacheReadTokens + cac
 
 Route accounting: the ranking key comes from `assistant/message`'s `message.source.{provider,model}`, the same field the host's token metering settles on. It deliberately **does not read the request-side configuration snapshot** — that records who the request *intended* to use, while this records who actually *billed*, and mixing the two makes the numbers impossible to reconcile. The price is that the rare step with only streaming usage and no final message (0.18% measured) has no route and lands in "Unattributed"; those steps still count as calls, and they are the only gap between the ranking's row sum and the grand total.
 
-Three time windows — last 90 days, last 30 days, all time. Data is fetched when the panel opens, when you change the window or workspace, and when you hit refresh; there is no resident push, because this panel does not need to tick.
+Four time windows — last 7 days, this month, last 30 days, all time (last 7 days by default). "This month" runs from the 1st of the current month through today and advances with the date. Data is fetched when the panel opens, when you change the window or workspace, and when you hit refresh; there is no resident push, because this panel does not need to tick.
 
 Right after the first install the panel shows "Scanning…"; missing host-side services show an explanatory note instead of an error. **This plugin writes no files of its own**: the fold state is persisted by the official session projection cache, so deleting the old `storages/tokstats-checkpoint.json` from a previous version changes nothing.
 

@@ -60,7 +60,7 @@
 | 未配价 | no price（行值）/ no price configured（tooltip） | 按模型区 |
 | 估算 | est.（行内）/ estimates（脚注） | 金额标注 |
 | 统计中… | Scanning… | 面板角标与空态 |
-| 今日 / 本周 / 累计 | Today / This week / All time | 三档时间开关 |
+| 近 7 天 / 本月 / 近 30 天 / 全部 | Last 7 days / This month / Last 30 days / All time | 时间档位开关 |
 | 上下文长度分布 | Context length distribution | 分区标题 |
 
 ## Git 提交规范
