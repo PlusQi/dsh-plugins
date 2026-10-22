@@ -45,7 +45,9 @@ function panelPropsOf(rpc) {
 		const table = {
 			"panel.title": "Token 分析",
 			"state.pending": "统计中…",
-			"range.days": "近 {count} 天",
+			"range.days7": "近 7 天",
+			"range.month": "本月",
+			"range.days30": "近 30 天",
 			"range.all": "全部",
 			"action.refresh": "重新统计",
 			"section.bucket": "上下文长度分布（按计费输入）",
@@ -206,7 +208,7 @@ test("面板打开时发一次 RPC（channel / endpoint / 缺省窗口）", asyn
 	assert.ok(summary, "应拉主报表");
 	assert.ok(counters, "应拉 promptopt 计数器");
 	assert.equal(summary.channel, CHANNEL);
-	assert.equal(summary.payload.windowDays, 90, "缺省 90 天");
+	assert.equal(summary.payload.windowDays, 7, "缺省档位是近 7 天");
 	assert.equal(summary.payload.workspace, undefined, "未选工作区时不传该字段");
 	assert.ok(tree !== null);
 });
@@ -309,7 +311,27 @@ test("AC-9：工作区切换器出现且含「全部工作区」与各项", asyn
 	assert.ok(textOf(select).includes("全部工作区"));
 });
 
-test("切换窗口：每个档位各发一次请求（90 / 30 / 全部=0）", async () => {
+	test("时间档位：四个按钮按「近 7 天 / 本月 / 近 30 天 / 全部」排列，缺省选中近 7 天", async () => {
+	const rpc = makeRpcStub();
+	rpc.respond(() => ({ ok: true, value: makeSummary() }));
+	const { react, main, t } = setupClient({ rpc });
+	const tree = await renderPanel(react, main, { t });
+	const buttons = nodesOf(tree).filter((n) => n.type === "button"
+		&& typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-switch"));
+	assert.equal(buttons.length, 4, "四个时间档位");
+	assert.deepEqual(buttons.map((b) => textOf(b)), ["近 7 天", "本月", "近 30 天", "全部"]);
+	// 按钮 key 必须是档位 id，不能是折算后的天数：每月 7 号「本月」与「近 7 天」
+	// 的 windowDays 都是 7，用天数当 key 会让两个按钮 key 撞车（React 重复 key 警告
+	// + 高亮错配）。断言写成 id 白名单而不是「四者不同」——后者在每月 22 号这类
+	// 「折算值恰好不撞车」的日子对回归仍有假绿，必须直接钉死寻址形态。
+	const keys = buttons.map((b) => b.props.key);
+	assert.deepEqual(keys, ["days7", "month", "days30", "all"], "档位按 id 寻址（与词典键 range.<id> 同源）");
+	const on = buttons.filter((b) => b.props.className.includes("dsh-tokstats-switchOn"));
+	assert.equal(on.length, 1, "同时只能有一个档位高亮");
+	assert.equal(textOf(on[0]), "近 7 天", "缺省选中近 7 天");
+});
+
+test("切换窗口：每个档位各发一次请求（近 7 天 / 本月 / 近 30 天 / 全部=0）", async () => {
 	const rpc = makeRpcStub();
 	rpc.respond(() => ({ ok: true, value: makeSummary() }));
 	const { react, main, t } = setupClient({ rpc });
@@ -317,21 +339,40 @@ test("切换窗口：每个档位各发一次请求（90 / 30 / 全部=0）", as
 	let tree = main.comp(props);
 	react.runEffects();
 	await new Promise((r) => setImmediate(r));
-	// 首轮：主报表 + 计数器各一次
-	assert.equal(rpc.calls.filter((c) => c.endpoint === "summary").length, 1);
+	// 首轮：主报表 + 计数器各一次（缺省近 7 天）
+	const first = rpc.calls.filter((c) => c.endpoint === "summary");
+	assert.equal(first.length, 1);
+	assert.equal(first[0].payload.windowDays, 7, "缺省发 7 天");
 
-	// 找到「全部」按钮并点击 → 触发 setWindowDays(0)，重渲染后 effect 再发一次。
-	react.reset();
-	const buttons = nodesOf(tree).filter((n) => n.type === "button" && typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-switch"));
-	assert.equal(buttons.length, 3, "三个窗口档位");
-	buttons[2].props.onClick();
-	react.reset();
-	tree = main.comp(props);
-	react.runEffects();
-	await new Promise((r) => setImmediate(r));
-	const summaries = rpc.calls.filter((c) => c.endpoint === "summary");
-	assert.equal(summaries.length, 2, "切档各发一次");
-	assert.equal(summaries[1].payload.windowDays, 0, "「全部」档发 0");
+	// 「本月」折算成「今天是几号」，全部档发 0；两者与已有请求的 windowDays 相同时
+	// （例如今天是 7 号 / 30 号）effect 不会重跑——这是按值去重的正常结果，断言
+	// 因此按时长变化与否分支，否则用例会在每月 7 号 / 30 号随机失败。
+	const monthDays = new Date().getDate();
+	const sequence = [
+		{ label: "全部", expect: 0 },
+		{ label: "近 30 天", expect: 30 },
+		{ label: "本月", expect: monthDays },
+	];
+	let previous = 7;
+	for (const step of sequence) {
+		react.reset();
+		const buttons = nodesOf(tree).filter((n) => n.type === "button"
+			&& typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-switch"));
+		const before = rpc.calls.filter((c) => c.endpoint === "summary").length;
+		buttons.find((b) => textOf(b) === step.label).props.onClick();
+		react.reset();
+		tree = main.comp(props);
+		react.runEffects();
+		await new Promise((r) => setImmediate(r));
+		const summaries = rpc.calls.filter((c) => c.endpoint === "summary");
+		if (step.expect === previous) {
+			assert.equal(summaries.length, before, `「${step.label}」窗口与当前相同时不重复请求`);
+		} else {
+			assert.equal(summaries.length, before + 1, `「${step.label}」切档发一次`);
+			assert.equal(summaries[summaries.length - 1].payload.windowDays, step.expect, `「${step.label}」档的 windowDays`);
+		}
+		previous = step.expect;
+	}
 });
 
 test("降级：connection 缺席时显示空态文案，不抛错（I8）", async () => {
@@ -451,7 +492,7 @@ test("面板所有「输入」显示值统一为 in+cr+cw（KPI / 周行 / 日�
 	assert.ok(!/输入 1\.0K/.test(text), "不得出现未缓存口径的「输入 1.0K」（缺陷形态）");
 });
 
-test("KPI：窗口天数参与日均换算（近 90 天 → 3/90 ≈ 0.0）", async () => {
+test("KPI：窗口天数参与日均换算（1 天窗口 → 3/1 = 3.0）", async () => {
 	const rpc = makeRpcStub();
 	rpc.respond(() => ({ ok: true, value: makeSummary({ windowDays: 1 }) }));
 	const { react, main, t } = setupClient({ rpc });

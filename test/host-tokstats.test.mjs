@@ -238,6 +238,23 @@ test("windowStart / weekStartOf：日键算术只走 UTC 解析，不随宿主�
 	assert.equal(tokstatsWeekStartOf("2026-10-25"), "2026-10-19", "周日归上一个周一");
 });
 
+test("TS-20：「本月」档的 windowDays 折算口径 = 当月 1 日（客户端取当天日期数，host 侧 windowStart 落地）", () => {
+	// 面板的「本月」不加新口径：客户端把「今天是几号」当 windowDays 发下来，
+	// host 侧 `today - (windowDays - 1)` 正好落在当月 1 日。两条式子分处两个模块图
+	// （client 是浏览器 bundle、host 是独立文件），没有任何共享常量，所以必须在这里
+	// 把耦合钉住——否则 host 侧哪天把 windowStart 改成 `today - windowDays`（少减 1），
+	// 面板「本月」会静默地少算一天，而两边各自的用例都不会失败。
+	for (const today of ["2026-10-22", "2026-10-01", "2026-02-28", "2026-12-31"]) {
+		// 客户端这边算的就是本地日期数（10-22 → 22，10-01 → 1）。
+		const dayOfMonth = Number(today.slice(8, 10));
+		assert.equal(tokstatsWindowStart(dayOfMonth, today), today.slice(0, 8) + "01", `${today} 的「本月」应到当月 1 日`);
+	}
+	// 跨年边界：12 月 31 日 → 31 → 12-01（不是次年 1 月）。
+	assert.equal(tokstatsWindowStart(31, "2026-12-31"), "2026-12-01");
+	// 对照：近 7 天 = 今天 + 前 6 天（不是前 7 天），与「本月」共用同一条式子。
+	assert.equal(tokstatsWindowStart(7, "2026-10-22"), "2026-10-16");
+});
+
 test("聚合：窗口过滤 + 工作区分组 + 周趋势分组", () => {
 	const summary = {
 		w: W_ALPHA,
