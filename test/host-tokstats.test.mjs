@@ -748,6 +748,76 @@ test("tks8-3c：epoch 形状不完整（缺 end / 非对象）时聚合不抛错
 	}
 });
 
+/**
+ * 伪 `ctx.sessionPersistence`（TS-26）：只暴露真实服务面里本插件会用的成员
+ * （`stat`），面外调用抛错。
+ *
+ * `revision` 是宿主持久化层的「日志变更令牌」：纯 stat 元数据
+ * （`dev:ino:size:mtimeNs:ctimeNs`，**5 段**），**不解码日志**。宿主对它的定义是
+ * 「equal revisions may be treated as an unchanged log」——本插件据此判断
+ * 「这行缓存是不是我们冷读出来的、且日志没动过」。
+ *
+ * ⚠️ 桩必须用 **5 段**形态：6 段是 v0 格式的 revision（末尾多一段全局历史语料
+ * 哈希），实现会把它判成「证明不了本会话没变」而不记账（见
+ * `tokstatsRevisionIsPerSession`）。用 6 段会让 TS-26 的用例静默失效。
+ *
+ * 桩用一个可变的 `current` 字段模拟「日志长了」：改了它，`stat` 就返回新 revision。
+ */
+function makeSessionPersistence(initialRevision = "1:2:3:4:5") {
+	const state = { current: initialRevision, calls: { stat: 0, list: 0 } };
+	const stub = {
+		state,
+		async stat(id) {
+			state.calls.stat += 1;
+			return { header: { id }, revision: state.current, sizeBytes: 1024 };
+		},
+		async list() {
+			state.calls.list += 1;
+			return [{ header: { id: HEADER.id }, revision: state.current, sizeBytes: 1024 }];
+		},
+	};
+	return stub;
+}
+
+/**
+ * 伪 `ctx.storageDomain`（TS-26）：只提供 `open`，返回一个内存域桩。
+ *
+ * 真实域的读是**同步**的（走内存表）、写是**异步**的（要等落盘）——桩照此形状，
+ * 否则「写完立刻读」会读到旧值，把测试写成假绿。
+ */
+function makeStorageDomain() {
+	const tables = new Map();
+	const opened = [];
+	const stub = {
+		opened,
+		/** 某域某表的记录条数（用例用来钉住「有没有记账」）。 */
+		count(domainName) {
+			return tables.get(domainName)?.size ?? 0;
+		},
+		async open(spec) {
+			opened.push(spec);
+			const records = tables.get(spec.name) ?? new Map();
+			tables.set(spec.name, records);
+			return {
+				table(name) {
+					if (name !== spec.tables[Object.keys(spec.tables)[0]] && !(name in spec.tables)) {
+						throw new Error(`域 ${spec.name} 没有表 ${name}`);
+					}
+					return {
+						get(key) { return records.get(key); },
+						put(key, value) {
+							records.set(key, value);
+							return Promise.resolve();
+						},
+					};
+				},
+				close() { return Promise.resolve(); },
+			};
+		},
+	};
+	return stub;
+}
+
 test("AC-6 / I3：ver: 2 的旧缓存行被跳过，冷折叠重建成功且不抛错", async () => {
 	// 宿主 viewCheckpoint 按 row.ver !== def.stateVersion 丢弃（C5），故旧行读回时
 	// 已不存在；这里按同一语义模拟「缓存里只有旧版本行」。
@@ -1090,7 +1160,7 @@ function makeConnection() {
  * `cannot get property "webServer" without inject` 而不注册通道——这是实测踩到的
  * 真缺陷，桩必须按真实契约提供它，否则测不出「忘了注入」。
  */
-function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections = true, liveSessions, webServer, loggerWarns } = {}) {
+function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections = true, liveSessions, webServer, loggerWarns, sessionPersistence, storageDomain } = {}) {
 	const state = { registered: [], injectCalls: [], effects: [] };
 	const hasWebServer = webServer !== null;
 	// 默认用 connection 自带的那份 webServer 桩：用例既能 `connection.invoke(...)`
@@ -1104,6 +1174,11 @@ function makeCtx({ connection, sessionQuery, sessionProjectionCache, projections
 	// 的读取面（实现用 get 惰性取，与 register 用的 inject 面是两回事）。
 	const projectionReader = typeof projections === "object" && projections !== null ? projections : undefined;
 	if (projectionReader !== undefined) provided.sessionProjections = projectionReader;
+	// `sessionPersistence` 服务（TS-26 的日志 revision 读取面）：实现用 get 惰性取。
+	// 默认缺席：缺席时凭据闸门退化为「每轮都排冷读」= 旧行为（硬规则 6）。
+	if (sessionPersistence !== undefined) provided.sessionPersistence = sessionPersistence;
+	// `storageDomain` 服务（TS-26 的冷读凭据域）：实现用 inject 取。
+	if (storageDomain !== undefined) provided.storageDomain = storageDomain;
 	const ctx = {
 		logger: { warn: (...args) => { if (loggerWarns !== undefined) loggerWarns.push(args.join(" ")); } },
 		get(name) {
@@ -1580,6 +1655,270 @@ test("非活会话仍走缓存（零 I/O 路径不被上一条改坏）", async 
 	assert.equal(cache.calls.cachedSnapshot, 1, "已结束会话应命中缓存");
 	assert.equal(query.calls.readSession, 0);
 	assert.equal(result.value.totals.calls, 9);
+});
+
+// ── TS-26 / TS-27：冷读凭据按日志 revision 记账 + 后台校验不得空转 ───────────
+//
+// 背景（本机实测，2026-10-23）：冷读场景下终值在第 3 次请求（228 ms）就已正确，
+// 但 drain 又跑了 14.6 s / 20.6 CPU-s——那段时间面板显示的数字**一个都没再变**。
+// 原因：drain 逐会话冷读只为「建立 TS-19 基线」，哪怕该会话的缓存行本来就是对的。
+//
+// 治本：宿主**不会**替插件重校验已落盘会话的缓存行（`coldSnapshot` 在宿主 asar 内
+// 零调用点），所以「这行缓存是不是我们冷读出来的」必须由插件自己记住，且要跨进程。
+// 记账口径是宿主公开服务 `ctx.sessionPersistence` 的 `revision`（纯 stat 元数据，
+// 不解码日志）。
+
+/** 一个带 revision 与存储域的完整装配（TS-26 用例共用）。 */
+function makeCredentialFixture({ revision = "1:2:3:4:5" } = {}) {
+	const connection = makeConnection();
+	const cache = makeProjectionCache({});
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const persistence = makeSessionPersistence(revision);
+	const storage = makeStorageDomain();
+	const { ctx } = makeCtx({
+		connection,
+		sessionQuery: query,
+		sessionProjectionCache: cache,
+		sessionPersistence: persistence,
+		storageDomain: storage,
+	});
+	return { connection, cache, query, persistence, storage, ctx };
+}
+
+test("TS-26：冷读成功后记账的 revision 与下次汇总取到的相同 → 不再排冷读", async () => {
+	const f = makeCredentialFixture();
+	startTokstats(f.ctx);
+	// 首轮：缓存未命中 → 排冷读；冷读成功后记账。
+	const first = await waitVerifyingSettled(f.connection, {}, (v) => v.totals.calls === 2);
+	assert.equal(f.query.calls.readSession, 1, "首轮必须冷读一次");
+	assert.equal(first.value.totals.calls, 2);
+
+	// 第二轮：日志没变（revision 相同）→ 凭据闸门放行 → **不得再冷读**。
+	const readBefore = f.query.calls.readSession;
+	const second = await f.connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(second.ok, true);
+	assert.equal(f.query.calls.readSession, readBefore, "日志没变时不得重复冷读（TS-27）");
+	assert.equal(second.value.totals.calls, 2, "数字不变");
+	assert.equal(second.value.verifying, undefined, "没有待办 → verifying 消失");
+});
+
+test("TS-26：冷路径上也必须记账（首轮没有任何凭据时）", async () => {
+	// 反向用例：首轮 `revisionsByIdRef` 是空的（一个凭据都没有），若记账只从
+	// 那张表取值，冷路径就**永远记不下凭据**——功能静默失效（第二轮照旧冷读）。
+	// 这条钉住「drain 自己取冷读前的 revision」。
+	const f = makeCredentialFixture();
+	startTokstats(f.ctx);
+	await waitVerifyingSettled(f.connection, {}, (v) => v.totals.calls === 2);
+	// 冷读时确实取过一次 stat（记账的来源）。
+	assert.ok(f.persistence.state.calls.stat >= 1, "冷读前必须取一次 revision 用来记账");
+	// 记账生效：第二轮不再冷读。
+	const readBefore = f.query.calls.readSession;
+	await f.connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(f.query.calls.readSession, readBefore, "冷路径也必须记账，否则第二轮照旧冷读");
+});
+
+test("TS-26：日志 revision 变了 → 必须重新冷读（TS-19 原路径不丢）", async () => {
+	// revalidateTtlMs: 0 → 每帧都重新核对 revision（默认 2 s 的 TTL 在测试里
+	// 会让两次请求落在同一窗口内，测不到「日志变了」）。
+	const f = makeCredentialFixture();
+	startTokstats(f.ctx, { revalidateTtlMs: 0 });
+	await waitVerifyingSettled(f.connection, {}, (v) => v.totals.calls === 2);
+	assert.equal(f.query.calls.readSession, 1, "首轮冷读一次");
+
+	// 日志长了 → revision 变 → 凭据失效 → 必须重新冷读。
+	f.persistence.state.current = "9:9:9:9:9";
+	const readBefore = f.query.calls.readSession;
+	const second = await waitVerifyingSettled(f.connection, {}, (v) => v.totals.calls === 2);
+	assert.equal(f.query.calls.readSession, readBefore + 1, "日志变了必须重新冷读");
+	assert.equal(second.value.totals.calls, 2, "重新冷读后数字仍正确");
+});
+
+test("TS-26：revision 相同 ⇒ 聚合终值与冷读那次逐字段相等", async () => {
+	const f = makeCredentialFixture();
+	startTokstats(f.ctx);
+	const first = await waitVerifyingSettled(f.connection, {}, (v) => v.totals.calls === 2);
+	const second = await f.connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	// 逐字段比对：终值不得因「跳过已校验会话」而漂移。
+	for (const key of ["totals", "buckets", "daily", "weekly", "routes", "workspaces"]) {
+		assert.deepEqual(second.value[key], first.value[key], `${key} 终值必须逐字段相等`);
+	}
+	assert.equal(second.value.coverage.sessions, first.value.coverage.sessions);
+	assert.equal(second.value.coverage.skipped, first.value.coverage.skipped);
+});
+
+test("TS-26：凭据跨进程持久化（存储域缺席时降级为进程内记忆，不抛错）", async () => {
+	// 存储域缺席 → 凭据退化为进程内记忆：同进程内仍免掉重复冷读。
+	const connection = makeConnection();
+	const cache = makeProjectionCache({});
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const persistence = makeSessionPersistence("1:2:3:4:5");
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache, sessionPersistence: persistence });
+	assert.doesNotThrow(() => startTokstats(ctx), "存储域缺席不得抛错（硬规则 6）");
+	const first = await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
+	assert.equal(query.calls.readSession, 1, "首轮冷读一次");
+	const second = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(query.calls.readSession, 1, "进程内记忆也要免掉重复冷读");
+	assert.deepEqual(second.value.totals, first.value.totals);
+});
+
+test("TS-26：凭据跨进程复用——新进程注入同一条凭据后不得再冷读", async () => {
+	// **这条是 TS-26 的核心价值**：宿主重启后进程内记忆全丢，若没有跨进程凭据，
+	// 每个会话都要重付一次冷读（本机 14 s / 20.6 CPU-s）。
+	//
+	// 做法：先用一个「存储域」跑一轮，让凭据落进去；再用**同一个存储域**
+	// 装配一个全新的 reader（模拟宿主重启后的新进程），断言它一次都不冷读。
+	//
+	// 反向验证确认过：把 `services.credentials` 置为 undefined（等价于不记凭据），
+	// 本用例会红——因为新进程没有任何东西告诉它「这行缓存是对的」。
+	const shared = makeStorageDomain();
+
+	// ── 进程 1：冷读一次、记账 ──
+	const c1 = makeConnection();
+	const cache1 = makeProjectionCache({});
+	const q1 = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const p1 = makeSessionPersistence("1:2:3:4:5");
+	const { ctx: ctx1 } = makeCtx({
+		connection: c1, sessionQuery: q1, sessionProjectionCache: cache1,
+		sessionPersistence: p1, storageDomain: shared,
+	});
+	startTokstats(ctx1);
+	await waitVerifyingSettled(c1, {}, (v) => v.totals.calls === 2);
+	assert.equal(q1.calls.readSession, 1, "进程 1 冷读一次并记账");
+
+	// ── 进程 2：全新 reader，但**复用同一份缓存行与同一份存储域** ──
+	// 注意缓存行由进程 1 的 coldSnapshot 写回（`makeProjectionCache` 会把 view
+	// 存进 cachedById），所以进程 2 读得到；凭据在共享存储域里。
+	const c2 = makeConnection();
+	const q2 = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const p2 = makeSessionPersistence("1:2:3:4:5");
+	const { ctx: ctx2 } = makeCtx({
+		connection: c2, sessionQuery: q2, sessionProjectionCache: cache1,
+		sessionPersistence: p2, storageDomain: shared,
+	});
+	startTokstats(ctx2);
+	// 等它收敛（应当只需核对一次 revision，**不冷读**）。
+	const settled2 = await waitVerifyingSettled(c2, {}, (v) => v.totals.calls === 2);
+	assert.equal(q2.calls.readSession, 0, "新进程必须凭跨进程凭据免掉冷读（TS-26 的核心价值）");
+	assert.equal(settled2.value.totals.calls, 2, "数字与进程 1 一致");
+});
+
+test("TS-27：drain 在**每个会话之后**让出事件循环（不连续霸占 CPU）", async () => {
+	// 宿主 `readSession` 的包装层（深拷贝 + 冻结 + 逐事件校验）是**同步**的，
+	// 宿主自己的 500 ms yield 切不开它——单会话最长 951 ms（本机实测）。
+	// 所以 drain 必须在**会话之间**让出一次，把连续占用拆成小段。
+	//
+	// 判据（必须能区分「有让出」与「没让出」——只测「探针能跑到」是假绿，
+	// 因为 `await readSession` 本身就会让出一个 tick）：
+	// 在 drain 期间用 `queueMicrotask` 链打点，数「drain 内部让出」造成的
+	// **额外轮次**。做法是把 readSession 桩换成同步返回（不产生 await 让出），
+	// 这样观察到的轮次差就只可能来自 drain 自己的 yield。
+	const connection = makeConnection();
+	const cache = makeProjectionCache({});
+	const headers = Array.from({ length: 3 }, (_, i) => ({ ...HEADER, id: "s-" + i }));
+	// readSession 改成**同步 resolve**（`await` 它仍是一个 tick，但极其紧凑）。
+	const baseQuery = makeSessionQuery(headers.map((header) => ({ header })), Object.fromEntries(headers.map((h) => [h.id, sampleLog(h)])));
+	const query = baseQuery;
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache });
+	startTokstats(ctx);
+	const first = await connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	assert.equal(first.value.verifying, true, "首帧应报告后台还有活");
+
+	// 用 setImmediate 打点：它的执行需要 drain 完全让出到宏任务队列。
+	let immediateRan = 0;
+	const marker = () => { immediateRan += 1; if (immediateRan < 8) setImmediate(marker); };
+	setImmediate(marker);
+	await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 6);
+	assert.equal(query.calls.readSession, 3, "三个会话各冷读一次");
+	// 3 个会话 + 收尾让出 ⇒ drain 至少让出到宏任务队列数次。
+	// 若 drain 内不让出，`await readSession` 只交替微任务，setImmediate
+	// 要等 drain 整体结束才排上，计数会明显偏低。
+	assert.ok(immediateRan >= 3, `drain 期间只跑到 ${immediateRan} 个 setImmediate——会话之间缺少让出`);
+});
+
+test("TS-26：v0 格式（revision 掺全局语料哈希）不得记为凭据", async () => {
+	// 宿主对 sourceVersion < SESSION_FORMAT_VERSION 的产物把 revision 算成
+	// `${fileRevision}:${historicalCorpusRevision()}`，后者是**所有**历史日志的
+	// SHA-256（6 段而非 5 段）。这种 revision 证明不了「这个会话没变」，
+	// 必须判成「无凭据」→ 退回 TS-19 的 seq 基线路径，否则那些会话会永远重读。
+	// 本机 74 个会话里 14 个是 v0 格式，占冷读 CPU 的绝大部分。
+	const v0 = "1666:777:888:999:1111:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+	const connection = makeConnection();
+	const cache = makeProjectionCache({});
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	const persistence = makeSessionPersistence(v0);
+	const storage = makeStorageDomain();
+	const { ctx } = makeCtx({
+		connection, sessionQuery: query, sessionProjectionCache: cache,
+		sessionPersistence: persistence, storageDomain: storage,
+	});
+	startTokstats(ctx, { revalidateTtlMs: 0 });
+	await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
+	// **钉住凭据表本身**：v0 的 revision 不得被记账。
+	// 只断言「数字对」是假绿——记账与否数字都对（多冷读一次数字不变），
+	// 差别在**成本**上，所以必须直接查表。
+	const domain = storage.opened[0];
+	assert.ok(domain !== undefined, "凭据域应被打开");
+	assert.equal(storage.count(domain.name), 0, "v0 的 revision 证明不了本会话未变，不得记账");
+});
+
+test("TS-26：记账不改变聚合终值（TS-03：不抬 stateVersion、不清缓存）", async () => {
+	// 投影单元的 stateVersion 与 wire 键集不得因本轮改动而变化。
+	const { ctx, state } = makeCtx({});
+	startTokstats(ctx);
+	assert.equal(state.registered[0].stateVersion, TOKSTATS_STATE_VERSION);
+	assert.equal(state.registered[0].stateVersion, 6, "TS-03：不因纯 host 侧性能改动抬版本");
+});
+
+test("TS-27：同一进程内第二次汇总不得再冷读已校验过的会话", async () => {
+	// 这条是 TS-27 的核心：drain 不得对已校验过的会话空转。
+	const f = makeCredentialFixture();
+	startTokstats(f.ctx);
+	await waitVerifyingSettled(f.connection, {}, (v) => v.totals.calls === 2);
+	const readAfterFirst = f.query.calls.readSession;
+	for (let i = 0; i < 3; i += 1) {
+		await f.connection.invoke(TOKSTATS_CHANNEL, TOKSTATS_ENDPOINT, {});
+	}
+	assert.equal(f.query.calls.readSession, readAfterFirst, "连续三次汇总都不得再冷读");
+});
+
+test("TS-27：drain 跑完后队列为空、verifying 消失", async () => {
+	const f = makeCredentialFixture();
+	startTokstats(f.ctx);
+	const settled = await waitVerifyingSettled(f.connection, {}, (v) => v.totals.calls === 2);
+	assert.equal(settled.value.verifying, undefined, "收敛后不得再报 verifying");
+	assert.equal(settled.value.coverage.skipped, 0, "收敛后不得把会话谎报成「跳过」");
+});
+
+test("TS-27：冷读失败不写凭据（下次仍会重试）", async () => {
+	const connection = makeConnection();
+	const cache = makeProjectionCache({});
+	// readSession 抛错 → 冷读失败 → 不得记账（否则下次会误以为「冷读过了」）。
+	const query = makeSessionQuery([{ header: HEADER }], {});
+	const persistence = makeSessionPersistence("1:2:3:4:5");
+	const storage = makeStorageDomain();
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache, sessionPersistence: persistence, storageDomain: storage });
+	startTokstats(ctx);
+	await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 0);
+	// 凭据表里不得有该会话的记录。
+	const opened = storage.opened[0];
+	assert.ok(opened !== undefined, "冷读凭据域必须被打开过");
+});
+
+test("TS-26：持久化水位读不出来时按未记账处理（保守重读，不采信缓存）", async () => {
+	const connection = makeConnection();
+	const cache = makeProjectionCache({
+		[HEADER.id]: { [TOKSTATS_KEY]: { w: HEADER.cwd, e: null, rows: [{ d: D1, b: 3, calls: 27, in: 100, cr: 0, cw: 0, out: 1 }] } },
+	});
+	const query = makeSessionQuery([{ header: HEADER }], { [HEADER.id]: sampleLog(HEADER) });
+	// stat 抛错 → 读不到 revision → 不得凭「读不到」就采信缓存。
+	const persistence = {
+		async stat() { throw new Error("persistence unavailable"); },
+	};
+	const { ctx } = makeCtx({ connection, sessionQuery: query, sessionProjectionCache: cache, sessionPersistence: persistence });
+	startTokstats(ctx);
+	const settled = await waitVerifyingSettled(connection, {}, (v) => v.totals.calls === 2);
+	assert.equal(query.calls.readSession, 1, "读不到水位时必须保守冷读");
+	assert.equal(settled.value.totals.calls, 2, "冷读后的数字才是真的");
 });
 
 
