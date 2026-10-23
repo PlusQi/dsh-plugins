@@ -960,6 +960,144 @@ test("TS-24：verifying 为 true 时自动重拉一次，收敛后停止", async
 	}
 });
 
+// ── TS-25：后台自动重拉不得把面板内容换成「统计中…」（闪屏）────────────────
+//
+// 用户实测反馈：首屏已经很快，但后台校验期间面板**反复整块闪烁**——每轮重拉都
+// 把 KPI / 桶分布 / 趋势整块卸载换成一行「统计中…」，再挂回来。1.5 s 一轮、
+// 连续 3–4 轮时用户根本来不及看清任何一帧数据，观感是「一直在刷但什么都没看到」。
+//
+// 根因：重拉与「用户主动操作」共用同一条 loading 路径——`setPhase("loading")`
+// 无条件执行，而渲染侧 `phase === "loading"` 时只渲染「统计中…」。
+//
+// 修法：后台自动重拉**不**再把 phase 打回 loading，已有内容继续留在屏上；
+// 「数字仍在变准」由页脚的「校验中…」如实披露（TS-24 已有）。
+
+/** 「统计中…」空态节点（出现即说明内容被卸载了）。 */
+function pendingNodeOf(tree) {
+	return nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-empty" && (textOf(n) || "").includes("统计中"));
+}
+
+/** KPI 卡的数值节点（存在即说明内容仍在屏上）。 */
+function kpiValueNodeOf(tree) {
+	return nodesOf(tree).find((n) => typeof n.props.className === "string" && n.props.className === "dsh-tokstats-kpiValue");
+}
+
+/** 档位按钮（按 type 过滤——只按类名 includes 会连父容器一起命中）。 */
+function rangeButtonsOf(tree) {
+	return nodesOf(tree).filter((n) => n.type === "button"
+		&& typeof n.props.className === "string" && n.props.className.includes("dsh-tokstats-switch"));
+}
+
+test("TS-25：后台自动重拉期间旧内容保留在屏上，不换成「统计中…」", async () => {
+	const realSetTimeout = globalThis.setTimeout;
+	const pendingTimers = [];
+	globalThis.setTimeout = (fn) => { pendingTimers.push(fn); return 1; };
+	try {
+		const rpc = makeRpcStub();
+		let round = 0;
+		rpc.respond(() => {
+			round += 1;
+			// 前两轮都在校验中（会继续排重拉），第三轮收敛。
+			return { ok: true, value: makeSummary({ verifying: round <= 2 }) };
+		});
+		const { react, main, t } = setupClient({ rpc });
+		// 首帧：走 renderPanel（它内部已 renderDeep 并反映 effect 写入的状态）。
+		const first = await renderPanel(react, main, { t });
+		assert.ok(kpiValueNodeOf(first) !== undefined, "首帧就该有 KPI 数值");
+		assert.equal(pendingNodeOf(first), undefined, "首帧不得是「统计中…」空态");
+
+		// 触发第一轮后台重拉：effect 重跑，此刻内容必须**仍在屏上**。
+		pendingTimers[0]();
+		react.runEffects();
+		// 重拉在飞（RPC 尚未兑现）时渲染——这是闪烁最容易观察到的时刻。
+		react.reset();
+		const during = renderDeep(react, main.comp({ t }));
+		assert.equal(pendingNodeOf(during), undefined, "后台重拉期间不得出现「统计中…」空态");
+		assert.ok(kpiValueNodeOf(during) !== undefined, "后台重拉期间旧内容必须保留在屏上");
+
+		// 等 RPC 兑现：数值更新，但同样不得退回空态。
+		for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+		react.reset();
+		const after = renderDeep(react, main.comp({ t }));
+		assert.equal(pendingNodeOf(after), undefined, "重拉完成后不得退回「统计中…」");
+		assert.ok(kpiValueNodeOf(after) !== undefined, "重拉完成后内容仍在");
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+	}
+});
+
+test("TS-25：用户主动切档位时清掉后台标记，旧内容按窗口口径换成 loading 态", async () => {
+	// 反向断言：后台重拉的「保留旧内容」不得泄漏到用户主动操作上。
+	// 切档位后旧窗口的数字对新窗口无意义，必须走 loading 态。
+	//
+	// **必须先让后台标记变成 true**（走一轮自动重拉）再点档位：只测「首帧直接
+	// 点档位」是假绿——那时标记本来就是 false，清不清它都一样，测试抓不到
+	// 「用户操作没有清标记」这个真实回归。
+	const realSetTimeout = globalThis.setTimeout;
+	const pendingTimers = [];
+	globalThis.setTimeout = (fn) => { pendingTimers.push(fn); return 1; };
+	try {
+		const rpc = makeRpcStub();
+		let round = 0;
+		rpc.respond(() => {
+			round += 1;
+			return { ok: true, value: makeSummary({ verifying: round <= 2 }) };
+		});
+		const { react, main, t } = setupClient({ rpc });
+		let tree = await renderPanel(react, main, { t });
+		// 走一轮后台重拉 → backgroundRef 置为 true。
+		pendingTimers[0]();
+		react.runEffects();
+		for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+		react.reset();
+		tree = renderDeep(react, main.comp({ t }));
+		assert.equal(pendingNodeOf(tree), undefined, "后台重拉期间不该有空态（前提校验）");
+
+		const buttons = rangeButtonsOf(tree);
+		assert.equal(buttons.length, 4, "四个时间档位");
+		// 点「本月」——口径变了，属于用户主动操作。
+		react.reset();
+		buttons[1].props.onClick();
+		// 点击后 effect 重跑：这是「用户主动操作」，内容应被换成 loading 态。
+		react.runEffects();
+		react.reset();
+		const after = renderDeep(react, main.comp({ t }));
+		assert.ok(pendingNodeOf(after) !== undefined, "用户主动切档位后应回到「统计中…」态");
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+	}
+});
+
+test("TS-25：后台重拉采用更长退避（3s），且不因退避变化而多排重拉", async () => {
+	// 退避从 1500 提到 3000 是为了把「连续 3–4 轮闪烁」压到「1–2 轮」。
+	// 这里钉住：首帧排的定时器间隔是 1500（首轮快），而**重拉之后**排的
+	// 定时器间隔是 3000（后续慢）——即退避只在后台轮次之间生效。
+	const realSetTimeout = globalThis.setTimeout;
+	const scheduled = [];
+	globalThis.setTimeout = (fn, delay) => { scheduled.push({ fn, delay }); return scheduled.length; };
+	try {
+		const rpc = makeRpcStub();
+		let round = 0;
+		rpc.respond(() => {
+			round += 1;
+			return { ok: true, value: makeSummary({ verifying: round <= 3 }) };
+		});
+		const { react, main, t } = setupClient({ rpc });
+		await renderPanel(react, main, { t });
+		assert.equal(scheduled.length, 1, "首帧排一个重拉定时器");
+		assert.equal(scheduled[0].delay, 1500, "首轮重拉间隔 1500ms");
+
+		// 触发第一轮后台重拉 → 它自己再排一个定时器，间隔应是 3000。
+		scheduled[0].fn();
+		react.runEffects();
+		for (let i = 0; i < 3; i += 1) await new Promise((r) => setImmediate(r));
+		assert.equal(scheduled.length, 2, "后台重拉后再排一个定时器");
+		assert.equal(scheduled[1].delay, 3000, "后台轮次之间退避到 3000ms");
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+	}
+});
+
 /** 日柱节点（含折叠标记类名与 tooltip）。 */
 function barNodesOf(tree) {
 	return nodesOf(tree).filter((n) => typeof n.props.className === "string" && /(?:^|\s)dsh-tokstats-bar(?:\s|$)/.test(n.props.className));
