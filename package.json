@@ -37,7 +37,8 @@
       "types": "./lib/types/client.d.ts",
       "default": "./lib/client.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "dsh": {
     "bundle": {
@@ -57,6 +58,12 @@
   },
   "files": [
     "lib",
+    "locale",
+    "screenshots.json",
+    "docs/assets/tokstats.png",
+    "docs/assets/tokstats-en.png",
+    "docs/assets/tokprev.png",
+    "docs/assets/tokprev-en.png",
     "icon.svg",
     "cordis.patch.yml",
     "CHANGELOG.md",

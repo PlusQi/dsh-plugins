@@ -174,6 +174,28 @@ v0.5.0 起初把 promptopt 放在 `conversation.composer.dock`（与 tokprev 预
 - **`engines.dsh` 写精确版本，不写区间**。宿主 `evaluatePluginCompatibility` 的判定是：**有 `engines.dsh` 时它单独决定、忽略 `peerDependencies`**；不满足就整包跳过（`loadProfileDirectory` 把它记进 `skippedBundles`，**不打印任何东西**）。写一条没实测过的区间等于替未知版本放行，而 rc 阶段官方保留破坏权。当前 pin 是 `0.2.1-rc.2`；升级宿主后按 README「支持的 dsh 版本」的三步重验，再抬 pin 并同步本文件「开发所对版本」。
   - `dsh.compatibility.dshReleases` 是**描述性**元数据（宿主运行时不读它，供插件市场与读者查），只列实测过的版本。它和 `engines.dsh` 必须表达同一事实，不能一个说兼容、另一个把整包挡掉。
 - **`icon` 字段**：值是包内相对路径（绝对路径与 `file:` 之类的 scheme 会被宿主拒绝），宿主按 SVG/PNG/JPEG/WebP 读成 data URL 内联，**上限 256 KiB**，且必须留在 manifest 所在目录内。当前 `icon.svg` 与侧栏图标同一造型、单色 `currentColor`。`files` 必须含它，否则 git 安装后读不到（宿主此时只回一条 `meta.error`，界面表现为没图标）。
+  - 另有一份**同造型的位图** `docs/assets/icon-180.png`（180×180 RGBA，品牌色 `#4D6BFE` 写死）：社区目录只接受 GitHub 托管的**位图**（SVG 与第三方图床会被拒），它只服务目录卡片，宿主侧仍然读 `icon.svg`。生成方式是无头 Edge 渲染——原 SVG 的 `currentColor` 单独渲染时无继承色会变黑，必须替换成品牌色再截图；宿主侧的 `currentColor` 不用改。
+
+### 展示元数据与运行时词典是两层（不要合并）
+
+插件页的标题/描述**不来自** `lib/client.js` 的 `LOCALE_NS_*` + `dicts`——那是运行时界面文案。宿主读的是**包级** `locale/{en,zh}.json`，链路有**四道门**（`dsh-app-boot` 的 `readPluginMeta`，`0.2.1-rc.2` 下 L2216）：
+
+```
+barePackageName(specifier)                        ← 必须是裸包名
+  ↓ optionalResourcePath(`${spec}/locale/en.json`)  ← ① exports 必须放行 "./locale/*.json"
+  ↓ dictionariesOf(dirname(en.json))                ← ② 语言文件同目录、文件名必须是语言 id
+  ↓ localizedText("title" / "description")          ← ③ 只读 meta.title / meta.description
+                                                      ④ files 必须含 "locale"（打包丢失）
+```
+
+四道门**缺任何一道都不报错**：宿主把字典当成空、`localizedText` 回退到 `package.json.name`，插件页就显示原始包名 `dsh-plugins`；而 `npm test` 依然全绿。所以这条由 guard 的 **PK-13** 静态兜住（文件与 `meta` 结构 / 语言 id 文件名 / `exports` 键 / `files` 项），**缺 `meta` 外壳**（写成 `{"title":…}`）也在拦截范围内——那种形态 JSON 完全合法，正是最容易「顺手简化」掉的一层。
+
+维护要点：
+
+- **只放 `meta.title` / `meta.description` 两个键**，别加 `meta.icon` 之类——`readPluginMeta` 不读它们，加了是死字段（guard 会给 WARN）。
+- **改完必须目检**：静态项只能证明「结构对」，证明不了「宿主真的加载了新元数据」。重启宿主（desktop profile 由 Electron 独占，要退出应用重开，不是关窗口）→ 设置 → 插件 → 看「已安装插件」卡片的标题与描述；切英文应变成 `locale/en.json` 的内容。`npm test` 与 guard 都覆盖不到这一步。
+- **`files` 只能用 `npm pack --dry-run --json` 验**：本机 `link:` 安装是 junction 直通仓库，`files` 白名单根本不生效，link 下永远看不出丢文件。
+
 
 ## 维护须知
 

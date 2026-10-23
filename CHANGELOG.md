@@ -86,6 +86,11 @@
 - **分发元数据齐备（`package.json`）**：补 `author` / `repository` / `homepage` / `bugs` / `keywords` / `icon`，新增 `engines.dsh` 与 `dsh.compatibility.dshReleases`；新增 `icon.svg`（与侧栏「Token 分析」入口同一三柱造型，`currentColor` 单色，宿主按 SVG 原样内联）并加入 `files`。此前包在插件市场 / 设置页里没有作者与主页可跳，也读不到图标。
   - **`engines.dsh` 写精确版本 `0.2.1-rc.2`，不写区间**：宿主按 `engines.dsh` **单独**判定兼容性（有该字段时忽略 `peerDependencies`），不满足就**整包跳过**且只记进 `skippedBundles`、不打印。写一条没实测过的区间等于替未知版本放行——rc 阶段官方保留破坏权，宁可失败关闭。升级宿主后若插件 UI 消失，先查这条 pin（README「支持的 dsh 版本」写了排查与重验清单）。
   - `dsh.compatibility.dshReleases` **只列实测过的版本**（`0.2.1-rc.2`: compatible）。宿主运行时不读它，它是给插件市场与读者看的描述性元数据——所以更不能凭推测写。
+- **包级展示元数据（`locale/en.json` + `locale/zh.json`，PK-13）**：此前宿主插件页把这个包显示成 `dsh-plugins`（原始包名）加一段中文长描述——因为 `readPluginMeta` 的标题回退链是「包级 `locale` 的 `meta.title` → `package.json` 的 `name`」，而本包没有包级 `locale`，且英文界面下描述也照显示中文。现在两条语言文件都带 `meta.title` / `meta.description`，插件页显示「Token 工具集」/「Token Toolbox」并随宿主语言切换。
+  - `package.json` 的 `exports` **只新增** `"./locale/*.json"`（不动 `.` / `./client` / `./package.json`）：宿主的 `optionalResourcePath` 走 Node ESM 解析器，未放行的子路径抛 `ERR_PACKAGE_PATH_NOT_EXPORTED` 后整段元数据静默退化为包名。`files` 同时加 `locale`，否则 npm / git 安装按白名单把文件丢掉（本机 `link:` 安装是 junction 直通仓库，**掩盖**这一条，只能靠 `npm pack --dry-run` 验）。
+  - **与 client 内词典是两层不同东西**，本次一个字都没动 `lib/client.js`：包级 `locale` 是「宿主不启动 client 也能读的包元数据」（插件页 / 市场卡片），`LOCALE_NS_*` + `dicts` 是运行时界面文案。官方 96 个 client/bundle 包里 89 个都带包级 `locale/`，这层是事实标准。
+  - 新增 guard 项 PK-13（文件与 `meta` 结构 / 语言 id 文件名 / `exports` 键 / `files` 项），失败信息写明「不改会怎样」。**缺 `meta` 外壳**（写成 `{"title":…}`）是最隐蔽的形态：JSON 合法、`npm test` 全绿、宿主不报错，标题静默回退成包名——已用反向验证确认 guard 能拦。
+- **位图店招 `docs/assets/icon-180.png`（180×180 RGBA，1.7 KB）与 `screenshots.json`**：社区目录只接受 GitHub 托管的位图（SVG 会被拒），沿用 `icon.svg` 的三柱造型按品牌色 `#4D6BFE` 独立渲染（原 SVG 用 `currentColor`，单独渲染时无继承色会变黑）。`screenshots.json` 列四张既有截图的相对路径并进 `files`——本机 `dshmarket@1.66.45` 尚不读它，属前瞻性准备（新版市场读）。两者都只服务对外展示，不进任何运行路径。
 
 ### Fixed
 

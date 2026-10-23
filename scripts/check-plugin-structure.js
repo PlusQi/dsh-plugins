@@ -356,6 +356,79 @@ for (const key of registered.keys()) {
 	}
 }
 
+// ── PK-13：包级展示元数据可被宿主解析 ──
+//
+// 宿主的插件页标题不是读 client 词典，而是 `dsh-app-boot` 的 `readPluginMeta`：
+//
+//   barePackageName(specifier)                      ← 必须裸包名
+//     ↓ optionalResourcePath(`${spec}/locale/en.json`)  ← exports 必须放行，否则整段退化为包名
+//     ↓ dictionariesOf(dirname(en.json))            ← 语言文件同目录，文件名必须是语言 id
+//     ↓ localizedText("title" / "description")      ← 只读 meta.title / meta.description
+//
+// 打包侧还有第四道：`files` 必须含 `locale`，否则 git / npm 安装拿不到文件。本机是
+// junction 的 link 安装，`files` 完全不生效——只有 `npm pack --dry-run` 能验，所以
+// 这条 guard 必须静态查 `files`，不能指望「本地装上去看着正常」。
+//
+// 最隐蔽的是 `meta` 外壳：写成 `{"title": …}` 时 JSON 完全合法、测试也全绿，宿主却
+// 静默把字典当成全空、回退到 `package.json.name`（插件页显示原始包名）。这正是
+// AC-15③ 反向验证要锁住的形态，所以这里显式查两层结构，而不是只查「能解析」。
+const LANG_ID = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/;
+const localeDir = join(root, "locale");
+const englishLocalePath = join(localeDir, "en.json");
+let localeFiles = [];
+try {
+	localeFiles = readdirSync(localeDir).filter((name) => name.endsWith(".json")).sort();
+} catch {
+	problems.push("locale/en.json 不存在 —— 宿主 readPluginMeta 找不到包级字典，插件页标题回退为 package.json.name（显示原始包名「dsh-plugins」）（PK-13）");
+}
+if (localeFiles.length > 0 && !localeFiles.includes("en.json")) {
+	problems.push(`locale/: 缺少 en.json（现有 ${localeFiles.join(", ")}）—— 宿主只以 en.json 为入口探测字典，其它语言文件会被整目录忽略（PK-13）`);
+}
+for (const name of localeFiles) {
+	const language = name.slice(0, -5);
+	if (!LANG_ID.test(language)) {
+		problems.push(`locale/${name}: 文件名不是语言 id（须匹配 ${LANG_ID}）—— 宿主 dictionariesOf 会直接抛错，整段元数据退化为包名（PK-13）`);
+		continue;
+	}
+	const file = join(localeDir, name);
+	let parsed;
+	try {
+		parsed = JSON.parse(readFileSync(file, "utf8"));
+	} catch (error) {
+		problems.push(`locale/${name}: 不是合法 JSON（${String(error).split("\n")[0]}）—— 宿主 readObject 抛错后整段元数据只剩错误诊断，插件页无标题（PK-13）`);
+		continue;
+	}
+	const meta = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed.meta : undefined;
+	const shellMissing = typeof meta !== "object" || meta === null || Array.isArray(meta);
+	if (shellMissing) {
+		// 缺 meta 外壳是最容易被「顺手简化」破坏的一条：JSON 合法、测试全绿、宿主不报错。
+		problems.push(`locale/${name}: 缺少 meta 外壳（形如 {"meta":{"title":…,"description":…}}，当前顶层键 ${Object.keys(parsed ?? {}).join(", ") || "无"}）—— 宿主 dictionariesOf 只读 meta.title / meta.description，会静默回退到 package.json.name，插件页标题显示原始包名（PK-13）`);
+		continue;
+	}
+	for (const field of ["title", "description"]) {
+		const value = meta[field];
+		if (typeof value !== "string" || value.trim() === "") {
+			problems.push(`locale/${name}: 缺少 meta.${field}（须为非空字符串）—— 宿主 readPluginMeta 会静默回退到 package.json 的 ${field === "title" ? "name（显示原始包名）" : "description（中文长句在英文界面照显示）"}（PK-13）`);
+		}
+	}
+	const extra = Object.keys(meta).filter((key) => key !== "title" && key !== "description");
+	if (extra.length > 0) {
+		warnings.push(`locale/${name}: meta 含宿主不读的键 ${extra.join(", ")} —— readPluginMeta 只消费 title / description，其余是死字段（PK-13）`);
+	}
+}
+const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const exportKeys = typeof pkg.exports === "object" && pkg.exports !== null ? Object.keys(pkg.exports) : [];
+if (!exportKeys.includes("./locale/*.json")) {
+	problems.push(`package.json exports: 缺少 "./locale/*.json"（现有键 ${exportKeys.join(", ") || "无"}）—— optionalResourcePath 走 Node ESM 解析器，未放行的子路径抛 ERR_PACKAGE_PATH_NOT_EXPORTED，宿主读不到字典、标题回退为包名（PK-13）`);
+}
+const filesList = Array.isArray(pkg.files) ? pkg.files : [];
+// 覆盖判定按打包语义：`locale`、`locale/**`、`locale/*.json` 都覆盖到 locale 目录；
+// 反向用例（从 files 删掉）走的是「一条都不覆盖」，所以这里只需认出这些形态。
+const localeCovered = filesList.some((entry) => typeof entry === "string" && /^\.?\/?locale(\/|$)/.test(entry));
+if (!localeCovered) {
+	problems.push(`package.json files: 缺少 "locale"（现有 ${filesList.join(", ") || "空"}）—— npm / git 安装按 files 白名单打包，locale 会被丢掉；本机 link 安装是 junction 直通仓库、看不出这个问题，只能靠 "npm pack --dry-run" 验（PK-13）`);
+}
+
 // ── 汇总输出 ──
 for (const w of warnings) console.log("[WARN] " + w);
 if (problems.length > 0) {
