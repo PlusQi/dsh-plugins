@@ -170,9 +170,12 @@ v0.5.0 起初把 promptopt 放在 `conversation.composer.dock`（与 tokprev 预
 
 - **本包没有发布到任何 registry，只能从 GitHub 安装**。npm 上的 `dsh-plugins@0.1.2` 是 MeCKodo 的插件市场 CLI（bin `dsp`），与本项目无关；dshfind 等索引已把两者混成一条记录（og:description 是本项目文案，Version / 安装命令指向别人的包）。
   - 因此**任何文档都不得写「从 npm 装 `dsh-plugins`」**——照做会装上别人的包，且失败时表现为「插件没生效」而不是「装错了」。README 中英已删掉该句并改成显式警告。
-  - 包名改 scoped（`@plusqi/dsh-plugins` 实测 404 空闲）作为**独立决策**待维护者裁决，不在本变更内：爆炸半径是 10 个文件（`lib/client.js` 15 行 / `lib/index.js` 19 行 / guard 11 行 / 5 个测试文件 15 行 / `cordis.patch.yml` 6 行 / `package.json` 1 行），guard 三处硬编码（`row.name` / `ns` 前缀 / `data-plugin-css` 前缀），且改投影单元 key 会让所有旧缓存作废（需冷折叠一次）。
+  - 包名改 scoped（`@plusqi/dsh-plugins` 实测 404 空闲）作为**独立决策**待维护者裁决，不在本变更内。成本分两栏看，**不要再用「文件数」当成本代理**：
+    - **改动面（代码侧，实测四档 diff）**：4–9 个文件 / 6–34 行（R1 包身份 4 文件 6 行 → R1+R2+R3 含投影 key 9 文件 34 行），guard 与 248 条测试全程绿。变量只有「跟不跟改派生命名空间与投影 key」。
+    - **用户代价（真正的成本，与改多少行无关）**：① 依赖键变更 ⇒ `dsh plugin update/remove` 用旧名失效，每个已装用户必须 `remove` + `add` 一次；② 若跟改投影 key（R3），所有旧缓存行作废 ⇒ 每人一次全量冷折叠（本机 50 会话 8.3 s，实际已 77 个缓存文件、更久）。
+    - 早先写的「爆炸半径是 10 个文件」是**代码文件口径**、且描述的是**文本散布面**（`dsh[-_]plugins` 共 144 处 / 16 个文件，含 6 个文档），不是改动面。历史与实测数据见本地 `docs/specs/active/ASSESS-pack-rename.md` §2.1–§2.4（不随仓库分发）。
 - **`engines.dsh` 写精确版本，不写区间**。宿主 `evaluatePluginCompatibility` 的判定是：**有 `engines.dsh` 时它单独决定、忽略 `peerDependencies`**；不满足就整包跳过（`loadProfileDirectory` 把它记进 `skippedBundles`，**不打印任何东西**）。写一条没实测过的区间等于替未知版本放行，而 rc 阶段官方保留破坏权。当前 pin 是 `0.2.1-rc.2`；升级宿主后按 README「支持的 dsh 版本」的三步重验，再抬 pin 并同步本文件「开发所对版本」。
-  - `dsh.compatibility.dshReleases` 是**描述性**元数据（宿主运行时不读它，供插件市场与读者查），只列实测过的版本。它和 `engines.dsh` 必须表达同一事实，不能一个说兼容、另一个把整包挡掉。
+  - `dsh.compatibility.dshReleases` 是**描述性**元数据（**无任何自动化消费方，仅人读**），只列实测过的版本。实测依据（2026-10-23 复核，宿主 `0.2.1-rc.2`）：asar 内 7026 个 `.js` 条目全文扫 `dshReleases` **0 命中**；官方 `dsh-plugin-market` 只从 registry 读 `engines.dsh`；第三方 `dshmarket@1.66.45` 同样 **0 命中**。它和 `engines.dsh` 必须表达同一事实，不能一个说兼容、另一个把整包挡掉。
 - **`icon` 字段**：值是包内相对路径（绝对路径与 `file:` 之类的 scheme 会被宿主拒绝），宿主按 SVG/PNG/JPEG/WebP 读成 data URL 内联，**上限 256 KiB**，且必须留在 manifest 所在目录内。当前 `icon.svg` 与侧栏图标同一造型、单色 `currentColor`。`files` 必须含它，否则 git 安装后读不到（宿主此时只回一条 `meta.error`，界面表现为没图标）。
   - 另有一份**同造型的位图** `docs/assets/icon-180.png`（180×180 RGBA，品牌色 `#4D6BFE` 写死）：社区目录只接受 GitHub 托管的**位图**（SVG 与第三方图床会被拒），它只服务目录卡片，宿主侧仍然读 `icon.svg`。生成方式是无头 Edge 渲染——原 SVG 的 `currentColor` 单独渲染时无继承色会变黑，必须替换成品牌色再截图；宿主侧的 `currentColor` 不用改。
 

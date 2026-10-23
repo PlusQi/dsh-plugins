@@ -51,6 +51,10 @@
 
 - **README 中英各加「支持的 dsh 版本 + 每版怎么验证」一节**：版本表（含证据指针）+ `engines.dsh` 的判定语义（失败关闭、不进日志）+ 升级宿主后的三步重验清单（结构 guard → `npm test` → 重启目检）。原文只有维护文档里的散文「开发所对版本」，使用者升级后遇到插件消失没有可自查的入口；清单第一步指向 `docs/INVARIANTS.md` 的 PK-* 与 `scripts/check-plugin-structure.js`。
 - **README 的 tokstats 功能列表改成「区块 → 解答的问题」表**：原列表是功能罗列（「有个周趋势表」），读者得自己推断每块图回答什么；改成每块先写问题再写怎么看，长段落（桶边界为什么这么切、观测面不是价目表）保留为表下注。
+- **文档里三处过期/错误的对外事实更正**（不动任何代码与版本号）：
+  - **README 中英的固定版本安装示例**从 `#v0.2.3` 改为当前真实 tag `#v0.6.0`。原示例停在四个版本前的 tag 上，而这句话**没有任何自动检查**（PK-11 只校验 CHANGELOG 里的 tag 存在性），比 CHANGELOG 更容易腐坏。
+  - **`dsh.compatibility.dshReleases` 的表述**（README 中英 + `docs/MAINTAINING.md`）从「供插件市场与读者查」改为「**无任何自动化消费方，仅人读**」，并附实测依据。原文会让维护者以为改动它有运行时影响。
+  - **改名成本口径**（`docs/MAINTAINING.md`）从「爆炸半径是 10 个文件」改为「改动面 / 用户代价」两栏：改动面实测 4–9 文件 / 6–34 行（四档 diff），真正的成本是每个已装用户 `remove` + `add` 一次、以及跟改投影 key 时的一次全量冷折叠。「10 个文件」是代码文件口径且描述的是文本散布面（`dsh[-_]plugins` 共 144 处 / 16 个文件，含 6 个文档），不是改动面。
 - **上下文长度分布由 2 的幂对数桶改为市面计费档 6 桶**：边界 `[4K, 8K, 16K, 32K, 64K, 128K]`（2 的幂，7 桶）→ `[8K, 32K, 128K, 256K, 512K]`（6 桶，标签 `[0,8K)` / `[8K,32K)` / `[32K,128K)` / `[128K,256K)` / `[256K,512K)` / `[512K,∞)`）。为什么这么切（2026-10-21，官方价格页 + 本机 4039 次真实调用实测）：
   - **32K 是最主流的低档上界**：阿里云百炼、火山方舟、智谱 GLM、腾讯混元 Hy3 preview 都在此设档（4 家）；**128K / 256K** 构成中段（阿里云 qwen3.5-flash 等、火山方舟 doubao-seed-2.0 系列都用这两点）；**512K** 是 MiniMax M3 的分界（≤512K / >512K 两档）。**200K** 是 Google Gemini / Anthropic 的历史分界，但 Anthropic 已于 2026 年取消 long-context 溢价（1M 全窗单一价），对以中国区厂商为主的观测面板意义弱于 256K，故不采用。
   - **旧划分对不上真实分布**：4K / 8K / 16K 没有任何厂商设档，旧方案里 `[4K,8K)` 在本机真实调用中是**完全空桶**，而 `[128K,∞)` 一桶吃掉 59% 调用 / 84% token——这就是旧桶划分失真的直接证据。
@@ -85,7 +89,7 @@
 - **聚合新增 `routes`**：`[{ rt, calls, in, cr, cw, out }]`，按次数降序、同次数按 `rt` 字典序、`""`（未标注）显式排最后。
 - **分发元数据齐备（`package.json`）**：补 `author` / `repository` / `homepage` / `bugs` / `keywords` / `icon`，新增 `engines.dsh` 与 `dsh.compatibility.dshReleases`；新增 `icon.svg`（与侧栏「Token 分析」入口同一三柱造型，`currentColor` 单色，宿主按 SVG 原样内联）并加入 `files`。此前包在插件市场 / 设置页里没有作者与主页可跳，也读不到图标。
   - **`engines.dsh` 写精确版本 `0.2.1-rc.2`，不写区间**：宿主按 `engines.dsh` **单独**判定兼容性（有该字段时忽略 `peerDependencies`），不满足就**整包跳过**且只记进 `skippedBundles`、不打印。写一条没实测过的区间等于替未知版本放行——rc 阶段官方保留破坏权，宁可失败关闭。升级宿主后若插件 UI 消失，先查这条 pin（README「支持的 dsh 版本」写了排查与重验清单）。
-  - `dsh.compatibility.dshReleases` **只列实测过的版本**（`0.2.1-rc.2`: compatible）。宿主运行时不读它，它是给插件市场与读者看的描述性元数据——所以更不能凭推测写。
+  - `dsh.compatibility.dshReleases` **只列实测过的版本**（`0.2.1-rc.2`: compatible）。**无任何自动化消费方，仅人读**（实测：宿主 asar 内 7026 个 `.js` 条目全文扫 `dshReleases` 0 命中，官方市场只读 `engines.dsh`，第三方 `dshmarket` 亦 0 命中）——所以更不能凭推测写。
 - **包级展示元数据（`locale/en.json` + `locale/zh.json`，PK-13）**：此前宿主插件页把这个包显示成 `dsh-plugins`（原始包名）加一段中文长描述——因为 `readPluginMeta` 的标题回退链是「包级 `locale` 的 `meta.title` → `package.json` 的 `name`」，而本包没有包级 `locale`，且英文界面下描述也照显示中文。现在两条语言文件都带 `meta.title` / `meta.description`，插件页显示「Token 工具集」/「Token Toolbox」并随宿主语言切换。
   - `package.json` 的 `exports` **只新增** `"./locale/*.json"`（不动 `.` / `./client` / `./package.json`）：宿主的 `optionalResourcePath` 走 Node ESM 解析器，未放行的子路径抛 `ERR_PACKAGE_PATH_NOT_EXPORTED` 后整段元数据静默退化为包名。`files` 同时加 `locale`，否则 npm / git 安装按白名单把文件丢掉（本机 `link:` 安装是 junction 直通仓库，**掩盖**这一条，只能靠 `npm pack --dry-run` 验）。
   - **与 client 内词典是两层不同东西**，本次一个字都没动 `lib/client.js`：包级 `locale` 是「宿主不启动 client 也能读的包元数据」（插件页 / 市场卡片），`LOCALE_NS_*` + `dicts` 是运行时界面文案。官方 96 个 client/bundle 包里 89 个都带包级 `locale/`，这层是事实标准。

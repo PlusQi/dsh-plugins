@@ -97,7 +97,8 @@ DSH 升级后若按钮点了没反应或一直报错，先对照维护文档里�
 `engines.dsh` 单独判定兼容性（有该字段时忽略 `peerDependencies`），**不满足就整包跳过**，
 且只记进 `skippedBundles` 不打印。rc 阶段官方保留破坏权，所以这里宁可失败关闭，也不写一条
 没实测过的区间去「放行」未知版本。`dsh.compatibility.dshReleases` 是同一事实的描述性元数据
-（宿主不读它，供插件市场与读者查）。
+（**无任何自动化消费方，仅人读**——实测宿主 asar 内 7026 个 `.js` 条目全文扫 `dshReleases` 0 命中，
+官方 `dsh-plugin-market` 只从 registry 读 `engines.dsh`，第三方 `dshmarket` 同样 0 命中）。
 
 **升级 dsh 后插件 UI 消失**，先查是不是这个 pin 把整包挡掉了：`node -e "console.log(require('./package.json').engines)"`
 对照宿主版本；确认新版宿主上把下面的清单重验一遍，再抬 pin 并同步 `docs/MAINTAINING.md`「开发所对版本」。
@@ -119,7 +120,7 @@ DSH 升级后若按钮点了没反应或一直报错，先对照维护文档里�
 npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins
 
 # 固定版本：# 后可跟 tag / 分支 / commit
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.2.3
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.6.0
 
 # 本机开发链接（改代码重启即生效，路径换成你本地的仓库位置）
 npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-plugins

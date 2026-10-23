@@ -98,8 +98,10 @@ range**: the host evaluates compatibility from `engines.dsh` alone (the field su
 `peerDependencies` for that decision), and **skips the whole bundle** when it does not match — recording
 it only in `skippedBundles` without printing anything. While the host is still in rc the vendor keeps the
 right to break contracts, so this pin fails closed instead of waving unverified versions through.
-`dsh.compatibility.dshReleases` describes the same fact (the host does not read it; it is for the plugin
-market and for readers).
+`dsh.compatibility.dshReleases` describes the same fact (**no automated consumer — it is for humans
+only**: a full-text scan of the host asar finds 0 hits for `dshReleases` across its 7026 `.js` entries;
+the official `dsh-plugin-market` reads only `engines.dsh` from the registry, and the third-party
+`dshmarket` has 0 hits as well).
 
 **If the plugin UI vanishes after a dsh upgrade**, first check whether this pin blocked the whole bundle:
 `node -e "console.log(require('./package.json').engines)"` against the host version. Once the checklist
@@ -124,7 +126,7 @@ Prerequisites: Node.js, git, pnpm (`npm i -g pnpm`). Private repos work too (pnp
 npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins
 
 # Pin a version: # accepts a tag / branch / commit
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.2.3
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.6.0
 
 # Local dev link (edit + restart to see changes; replace with your local repo path)
 npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-plugins
