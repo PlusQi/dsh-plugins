@@ -8,11 +8,11 @@
   "author": "PlusQi",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/PlusQi/dsh-plugins.git"
+    "url": "git+https://github.com/PlusQi/dsh-tokstats.git"
   },
-  "homepage": "https://github.com/PlusQi/dsh-plugins",
+  "homepage": "https://github.com/PlusQi/dsh-tokstats",
   "bugs": {
-    "url": "https://github.com/PlusQi/dsh-plugins/issues"
+    "url": "https://github.com/PlusQi/dsh-tokstats/issues"
   },
   "keywords": [
     "deepseek-harness",
