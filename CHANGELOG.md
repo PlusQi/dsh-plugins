@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **包级显示名改为「Token 用量工具箱」/「Token Usage Kit」**（原「Token 工具集」/「Token Toolbox」）：原名太泛——任何 token 相关插件都叫得上，且读起来像分类而不是名字。新名把主语落在**用量**这条主线上（tokstats 面板是本包最大的组件），`用量` / `Usage` 也比 `工具` / `Toolbox` 更能让人预期「打开会看到数字」。
+  - **纯展示层**：只改 `locale/zh.json` 与 `locale/en.json` 的 `meta.title`，不碰包名、投影单元 key、RPC 通道名与存储域名，**不清缓存、不需要重新安装**；link 安装下重启宿主即生效。
+  - **三个组件行仍同名，这是宿主设计上限而非缺陷**：宿主只有包级显示名通道（`readPluginMeta` 全 asar 仅一处调用且入参是包名；行 meta 由 `metaOf(row.name, base)` 取得；客户端行标题只读 `row.meta.title`，无 `row.label`）。硬规则 1 又要求三行 `name` 都是裸包名 `dsh-tokstats`，因此三行必然共用这一份标题，只能靠行下列出的 `tokprev` / `tokstats` / `promptopt` 区分。要真正按行命名只能拆成三个独立包（代价见 `docs/MAINTAINING.md`「展示元数据与运行时词典是两层」）。
+  - **不要试图把行名改成子路径来蹭每行 locale**：`client-modules` 的 `exactPackageSpecifier` 拒绝含 `/` 的标识符，该行不会进入 client 图，插件 UI 会整块消失（证据与结论已写进维护文档，勿再试）。
+
 ## [0.7.1] - 2026-10-24
 
 > **状态**：本段对应 tag `v0.7.1`。此后未发布内容重新挂回 `[Unreleased]` 段。

@@ -204,7 +204,14 @@ barePackageName(specifier)                        ← 必须是裸包名
 
 维护要点：
 
+- **宿主没有「按行」的显示名通道，一个包只能有一个标题——三行同名是设计上限，不是 bug**（2026-10-24 逐条复核，勿再当缺陷排查）：
+  - 标题只有一个来源：`readPluginMeta` 全 asar 仅**一处**调用（`dsh-app-boot/lib/index.js` 的 `metaOf` → `readPluginMeta`），入参是**包名**；
+  - 行 meta 也按包名取：`dsh-plugin-manager/lib/index.js` 的 `declaredRows` 里 `const meta = packages?.metaOf(row.name, base)`——`row.name` 是本行配置的模块名，即裸包名；
+  - 客户端行标题只读 `row.meta.title`（`dsh-client-ui-plugin-manager/lib/client.js` 的 `rowText`），**不存在** `row.label` / `row.title` 字段；
+  - 所以三行共用一份 `locale/zh.json`。要按行区分，只能拆成三个独立包（各自一个 `package.json`），代价是三条发布线 + 冻结项（投影 key / RPC 通道 / 存储域名）迁移，本包**不做**。
+  - **千万不要为此把行 `name` 改成子路径**（如 `dsh-tokstats/tokprev`）来蹭 `<specifier>/locale/en.json`：`client-modules` 的 `exactPackageSpecifier` 明确拒绝含 `/` 的标识符（`!specifier.includes("/")`），`locatePkgJson` 随即返回 `undefined`，该行**不进入 client 图 → 插件 UI 整块消失**。这正是 AGENTS.md 硬规则 1 的实物证据，guard L71 会直接拦。
 - **只放 `meta.title` / `meta.description` 两个键**，别加 `meta.icon` 之类——`readPluginMeta` 不读它们，加了是死字段（guard 会给 WARN）。
+- **`meta.description` 与 `package.json.description` 是两回事**：前者是插件页/市场卡片上的一句人读简介（两个语言各一份），后者是 npm 元数据里的中文长句。宿主对包卡片用的是**前者**（`readPluginMeta`），`listBundles` 另有独立的 `description` 字段取自**后者**——两边措辞不必一致，也不必同步改。
 - **改完必须目检**：静态项只能证明「结构对」，证明不了「宿主真的加载了新元数据」。重启宿主（desktop profile 由 Electron 独占，要退出应用重开，不是关窗口）→ 设置 → 插件 → 看「已安装插件」卡片的标题与描述；切英文应变成 `locale/en.json` 的内容。`npm test` 与 guard 都覆盖不到这一步。
 - **`files` 只能用 `npm pack --dry-run --json` 验**：本机 `link:` 安装是 junction 直通仓库，`files` 白名单根本不生效，link 下永远看不出丢文件。
 
