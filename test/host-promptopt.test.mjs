@@ -420,7 +420,7 @@ test("计数器域打不开时往 stderr 写一行诊断（logger.warn 不落宿
 	} finally {
 		process.stderr.write = original;
 	}
-	assert.ok(written.some((line) => line.includes("[dsh-plugins]") && line.includes("计数器域不可用")), "应留下可检索的诊断行");
+	assert.ok(written.some((line) => line.includes("[dsh-tokstats]") && line.includes("计数器域不可用")), "应留下可检索的诊断行");
 });
 
 

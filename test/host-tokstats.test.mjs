@@ -1575,7 +1575,7 @@ test("RPC 注册成功时往 stderr 留一行可检索记录（通道静默不�
 		process.stderr.write = original;
 	}
 	assert.equal(connection.server.routes.length, 1);
-	assert.ok(written.some((line) => line.includes("[dsh-plugins]") && line.includes("已注册 RPC 通道")), "应留下注册成功的诊断行");
+	assert.ok(written.some((line) => line.includes("[dsh-tokstats]") && line.includes("已注册 RPC 通道")), "应留下注册成功的诊断行");
 });
 
 

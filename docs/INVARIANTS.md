@@ -16,19 +16,19 @@
 
 | ID | 不变量 | 证据 | 层级 |
 | --- | --- | --- | --- |
-| PK-01 | `cordis.patch.yml` 每行的 `name` 是裸包名 `'dsh-plugins'`；写成子路径只剩 host 半边 | guard「硬规则 1」 | L1 |
+| PK-01 | `cordis.patch.yml` 每行的 `name` 是裸包名 `'dsh-tokstats'`；写成子路径只剩 host 半边 | guard「硬规则 1」 | L1 |
 | PK-02 | client 模块图按包扁平：所有插件实现在 `lib/client.js` 单文件内，禁止相对路径 `require`（factory 的 require 只认模块表词） | guard「硬规则 2（require 部分）」 | L1 |
 | PK-03 | patch 每行建一个 host fiber、`config.plugin` 是 host 分发键；client 每包单 fiber 且无条件注册 `PLUGINS` 全部插件。`PLUGINS` 注册表与 patch 行必须一一对应（新增插件漏注册即拦） | guard「硬规则 3」 | L1 |
-| PK-04 | 每插件独立样式 tag（`data-plugin-css="dsh-plugins/<id>"`），禁止包级共享 `<style>` | guard「硬规则 4」；`test/client-tokstats.test.mjs`「每插件样式 tag 独立」 | L1 + L2 |
+| PK-04 | 每插件独立样式 tag（`data-plugin-css="dsh-tokstats/<id>"`），禁止包级共享 `<style>` | guard「硬规则 4」；`test/client-tokstats.test.mjs`「每插件样式 tag 独立」 | L1 + L2 |
 | PK-05 | 无构建步骤、零运行时依赖：`lib/client.js` 即最终产物（无 TS/JSX/构建脚本）；`lib/index.js` 只 import `node:` 内建，npm 包（含 cordis/zod）在 pnpm link 路径下不可解析 | guard「零运行时依赖：`lib/index.js` 只许 `node:` 前缀」 | L1 |
 | PK-06 | 兼容面优雅降级：所有宿主数据读取路径拿不到数据时渲染 null / 空态，不抛错 | 各插件的降级断言（见 TS-10 / TP / PO 各行） | L2 |
-| PK-07 | 每插件自带词典：`PLUGINS` 条目带 `ns`（值必须等于 `dsh-plugins.<键>`，带包前缀防撞车）与 `dicts`（`{ zh, en }`，zh 为键集真源，en 逐键对应）；无界面文案的插件显式写 `ns: null`。文案写成 `{name}` 占位符整句模板，带计数按 `.one`/`.other` 成对 | guard「硬规则 7：ns 字段 / ns 值 / dicts 字段」；`assertDictPair` 双向键集断言（4 个 client 测试文件） | L1 + L2 |
+| PK-07 | 每插件自带词典：`PLUGINS` 条目带 `ns`（值必须等于 `dsh-tokstats.<键>`，带包前缀防撞车）与 `dicts`（`{ zh, en }`，zh 为键集真源，en 逐键对应）；无界面文案的插件显式写 `ns: null`。文案写成 `{name}` 占位符整句模板，带计数按 `.one`/`.other` 成对 | guard「硬规则 7：ns 字段 / ns 值 / dicts 字段」；`assertDictPair` 双向键集断言（4 个 client 测试文件） | L1 + L2 |
 | PK-08 | host 半边不写盘：持久化只经官方 `session-projection-cache`，本包不得写 `DSH_HOME/storages/` 下任何自有文件 | guard「I2 / AC-15：host 半边不得写盘」（写/改名/建目录调用） | L1 |
 | PK-09 | client 产物不持有成本维度：无 `prices` 字面量（成本维度已整体删除） | guard「I1：client 半边不得持有价格」；`test/client-tokstats.test.mjs`「client 产物无 prices 字面量」 | L1 + L2 |
 | PK-10 | client 不解释路由维度：`rt` 只作整串标签渲染，产物里不存在对 `provider` / `model` 的维度用法（属性访问 / 下标 / 键 / 拆分） | guard「DIMENSION_USE 四条正则」 | L1 |
 | PK-11 | `CHANGELOG.md` 的版本段与底部链接区**双向一一对应**：每个 `## [X.Y.Z]` 段落必须有 `[X.Y.Z]:` 链接行，每条链接行必须有对应段落（无悬空）；`[Unreleased]` 必须存在且基线指向**最新已发布版本**（`...compare/v<最新>...HEAD`）；链接里引用的每个 `vX.Y.Z` **必须是本地真实存在的 tag**（指向不存在的 tag 在 GitHub 上是硬 404 且不会自愈——未发布内容应挂在 `[Unreleased]` 段下，打 tag 时才改名为版本段） | guard「CHANGELOG 版本段 ↔ 底部链接区一一对应」（四条：段缺链接 / 链接悬空 / Unreleased 基线 / tag 存在性） | L1 |
 | PK-12 | `package.json` 的 `version` **等于 CHANGELOG 最新已发布版本段**（第一个 `## [X.Y.Z]`）。未发布的改动挂在 `[Unreleased]` 下、不抬版本号；打 tag 时同时抬版本号并把段落定版——这条检查让「版本号」与「已发布事实」无法各自漂移（此前出现过 `package.json` 0.7.1 / 最新已发布段 0.6.0 / `v0.7.1` tag 不存在三者并存） | guard「package.json 版本 ↔ CHANGELOG 最新已发布段」 | L1 |
-| PK-13 | **包级展示元数据可被宿主解析**：`locale/en.json` 必须存在、可解析、带 `meta` 外壳且 `meta.title` / `meta.description` 均非空；`locale/*.json` 的文件名必须是语言 id 且与 `en.json` 同目录；`package.json` 的 `exports` 必须放行 `"./locale/*.json"`（否则 `optionalResourcePath` 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`）；`files` 必须含 `locale`（否则 npm / git 安装按白名单丢文件；本机 junction 的 link 安装掩盖此问题）。缺任一门宿主 `readPluginMeta` 都**静默**回退到 `package.json.name`——插件页标题显示原始包名 `dsh-plugins`，且 `npm test` 全绿 | guard「PK-13：包级展示元数据」（四项：`locale` 文件与 `meta` 结构 / 语言 id 文件名 / `exports` 键 / `files` 项） | L1 |
+| PK-13 | **包级展示元数据可被宿主解析**：`locale/en.json` 必须存在、可解析、带 `meta` 外壳且 `meta.title` / `meta.description` 均非空；`locale/*.json` 的文件名必须是语言 id 且与 `en.json` 同目录；`package.json` 的 `exports` 必须放行 `"./locale/*.json"`（否则 `optionalResourcePath` 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`）；`files` 必须含 `locale`（否则 npm / git 安装按白名单丢文件；本机 junction 的 link 安装掩盖此问题）。缺任一门宿主 `readPluginMeta` 都**静默**回退到 `package.json.name`——插件页标题显示原始包名（v0.7.0 前是 `dsh-plugins`，现应显示 `Token 工具集` / `Token Toolbox`），且 `npm test` 全绿 | guard「PK-13：包级展示元数据」（四项：`locale` 文件与 `meta` 结构 / 语言 id 文件名 / `exports` 键 / `files` 项） | L1 |
 | PK-14 | **包身份在四处必须一致**：`package.json` 的 `name` 是唯一真源，`cordis.patch.yml` 每行 `name:`、`lib/client.js` 的 `__ModuleLoader__.load({id})`、每插件 `ns` 的包前缀（`<包名>.<键>`）与 `data-plugin-css` 前缀都必须等于它。前三处不等时**宿主不报错**：client 图按包名建、按 `id` 认领，不等则「插件 UI 整个消失 + 浏览器控制台一条 `loaded without registering`」，而 guard 与全部测试可以全绿（改名漏改 `id:` 的实测形态见本地 `docs/specs/active/ASSESS-pack-rename.md` §3.5）。**这就是改名必须先落地本行的原因** | guard「PK-14：包身份一致性」（以 `package.json.name` 为真源派生校验：`client.js` 的 `id` / patch 行 `name` / `ns` 前缀 / `data-plugin-css` 前缀） | L1 |
 
 ## tokprev（TP）

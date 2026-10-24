@@ -1,4 +1,4 @@
-# dsh-plugins
+# dsh-tokstats
 
 [简体中文](./README.md) | English
 
@@ -20,7 +20,7 @@ All plugins live in a single pack (one repo = one profile bundle): install once 
 
 Plugins render their copy through the host locale service and **follow DSH Settings → General → Language**; the pack itself has no language switch.
 
-- Dictionaries are namespaced per plugin — `dsh-plugins.tokprev`, `dsh-plugins.tokstats` and `dsh-plugins.promptopt`.
+- Dictionaries are namespaced per plugin — `dsh-tokstats.tokprev`, `dsh-tokstats.tokstats` and `dsh-tokstats.promptopt`.
 - promptopt splits **two axes**: UI copy follows the host language, while the **restructured prompt follows the draft's language** (a Chinese draft still comes back Chinese on an English UI) — the result is content, not UI copy.
 - With no explicit choice the host falls back to the browser language, and to en when it is neither zh nor en.
 - `locale` is a **hard dependency** (as in official UI packs): when the host has no locale service (or it is disabled by hand), the whole bundle does not load — the UI disappears with no log line, rather than showing half-translated copy.
@@ -117,20 +117,35 @@ as an error:
 
 Prerequisites: Node.js, git, pnpm (`npm i -g pnpm`). Private repos work too (pnpm uses your local git credentials).
 
-> **Install from GitHub only**. The `dsh-plugins` name on npm belongs to **somebody else** (a plugin
-> market CLI unrelated to this project), so `add dsh-plugins` installs the wrong package; this pack is
-> not published to any registry.
+> **Install from GitHub only — this pack is not published to any registry.** Note that the name
+> `dsh-plugins` on npm belongs to **somebody else** (a plugin market CLI unrelated to this project).
+> This pack was renamed to `dsh-tokstats` in v0.7.0; `add dsh-plugins` is still not this project.
 
 ```powershell
 # Install from GitHub (other users)
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
 
 # Pin a version: # accepts a tag / branch / commit
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.6.0
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats#v0.7.0
 
 # Local dev link (edit + restart to see changes; replace with your local repo path)
-npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-tokstats
 ```
+
+> **Upgrading from the old name** (the package name changed from `dsh-plugins` to `dsh-tokstats` in
+> v0.7.0): the dependency key changed, so `update` with the old name fails — you must
+> **remove, then add**:
+>
+> ```powershell
+> npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
+> npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
+> ```
+>
+> The repository moved to `github.com/PlusQi/dsh-tokstats` — **the old address still works** (GitHub
+> answers with a 301; verified). Published tags and the `raw.githubusercontent.com` image links in the
+> READMEs keep working. **No projection cache is lost**: the projection unit key, RPC channel names and
+> storage domains deliberately keep the old name (see the note at the end of the next section), so this
+> rename does not trigger a cold fold.
 
 After installing, **restart the dsh web process** and reload the page (profile composition only happens at startup).
 Install location: `$DSH_HOME/profiles/web/` (default `~/.dsh`). `dsh plugin` is a pnpm forwarder:
@@ -141,10 +156,10 @@ This pack has no build scripts, so git installs never trip pnpm's build-script g
 
 ```powershell
 # Update: re-resolves the install spec (unpinned refs pull the default branch's latest commit)
-npx @deepseek-ai/dsh plugin --profile web update dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web update dsh-tokstats
 
 # Uninstall the whole pack (auto-detached from the layer list)
-npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web remove dsh-tokstats
 ```
 
 To temporarily disable a single plugin (no code changes): append to `~/.dsh/profiles/web/cordis.patch.yml`
@@ -155,6 +170,20 @@ To temporarily disable a single plugin (no code changes): append to `~/.dsh/prof
 ```
 
 Restart to apply. Note: `disabled` removes that row's **host-side** fiber only — whether the browser-side UI unloads depends on **whether any row of the pack is still live**, so for a pure-interface plugin like tokprev, disabling one row does **not** make it disappear from the page. For a real per-plugin off-switch, split the plugin into its own package (rationale and steps in the maintenance doc).
+
+> **Why some names can no longer be changed**: v0.7.0 renamed the package to `dsh-tokstats`, but the
+> identifiers below **deliberately keep** the old `dsh-plugins` name — they are persisted state or
+> cross-side contracts, not display names:
+>
+> | Identifier | Value | Why it is frozen |
+> | --- | --- | --- |
+> | Projection unit key | `dsh-plugins.tokstats` | Stored as a cache field name; changing it invalidates every user's cache rows and forces a full cold fold |
+> | RPC channel names | `/dsh-plugins.tokstats` · `/dsh-plugins.promptopt` | Contract between the browser side and the host side |
+> | Storage domains | `dsh_plugins_tokstats` · `dsh_plugins_promptopt` | Persisted; and the host's `UNIT_NAME_RE` forbids dots |
+>
+> The rule in one line: **persisted or cross-side ⇒ frozen; in-process or display-only ⇒ follows the
+> package name**. That is why the UI dictionary namespaces and the style-tag prefix did become
+> `dsh-tokstats.*`, while the three items above stay put.
 
 ## Maintenance
 
