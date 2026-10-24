@@ -1,10 +1,10 @@
 # Changelog
 
-本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-plugins#vX.Y.Z` 固定安装。
+本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-tokstats#vX.Y.Z` 固定安装（旧地址 `PlusQi/dsh-plugins` 仍可用，GitHub 301 自动重定向）。
 
-## [Unreleased]
+## [0.7.0] - 2026-10-24
 
-> **状态**：尚未打 tag。按本仓库约定（见 `docs/MAINTAINING.md`「发布到 GitHub」），未发布内容挂在 `[Unreleased]` 段下，打 tag 时再把段头改成 `## [X.Y.Z] - 日期`。
+> **状态**：本段对应 tag `v0.7.0`。此后未发布内容重新挂回 `[Unreleased]` 段。
 
 > **破坏性变更（一项）**：**包名 `dsh-plugins` → `dsh-tokstats`**，profile 的依赖键随之变化，`dsh plugin update` / `remove` 用旧名会失效。迁移（一次性，**不需要清缓存**）：
 >
@@ -253,7 +253,8 @@
 - 双语 README（中文默认 + English）及效果示意图。
 - 设计决策记录 SPEC-tokprev.md（本地留存，不随仓库分发）。
 
-[Unreleased]: https://github.com/PlusQi/dsh-plugins/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/PlusQi/dsh-tokstats/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/PlusQi/dsh-tokstats/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/PlusQi/dsh-plugins/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/PlusQi/dsh-plugins/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/PlusQi/dsh-plugins/compare/v0.5.0...v0.5.1
