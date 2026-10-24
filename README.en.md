@@ -91,7 +91,8 @@ If the button does nothing or always errors after a DSH upgrade, check the host-
 
 | Host version | Status | How it is verified | Evidence |
 | --- | --- | --- | --- |
-| `0.2.1-rc.2` | **tested** | link-install, restart dsh web, reload the page and eyeball every plugin (tokprev preview line / every tokstats panel block / promptopt star button) | the PK-05 / PK-08 / PK-10 rows in `docs/INVARIANTS.md`; `node scripts/check-plugin-structure.js` |
+| `0.2.1-rc.3` | **tested** | link-install, restart dsh web, reload the page and eyeball every plugin (tokprev preview line / every tokstats panel block / promptopt star button) | the PK-05 / PK-08 / PK-10 / PK-15 rows in `docs/INVARIANTS.md`; `node scripts/check-plugin-structure.js` |
+| `0.2.1-rc.2` | no longer admitted | Same code path as the row above; v0.7.0 pinned it, and once the host moved to rc.3 the whole bundle was skipped (see the checks below) | Historical test record (at the v0.7.0 release) |
 
 The declaration lives in `package.json` as `engines.dsh`, and its value is an **exact version, not a
 range**: the host evaluates compatibility from `engines.dsh` alone (the field suppresses
@@ -99,9 +100,10 @@ range**: the host evaluates compatibility from `engines.dsh` alone (the field su
 it only in `skippedBundles` without printing anything. While the host is still in rc the vendor keeps the
 right to break contracts, so this pin fails closed instead of waving unverified versions through.
 `dsh.compatibility.dshReleases` describes the same fact (**no automated consumer — it is for humans
-only**: a full-text scan of the host asar finds 0 hits for `dshReleases` across its 7026 `.js` entries;
-the official `dsh-plugin-market` reads only `engines.dsh` from the registry, and the third-party
-`dshmarket` has 0 hits as well).
+only**: a full-text scan of the host asar (rc.3) finds 0 hits for `dshReleases` across its 7131 `.js`
+entries; the official `dsh-plugin-market` reads only `engines.dsh` from the registry, and the third-party
+`dshmarket` has 0 hits as well). Guard check **PK-15** keeps the two fields consistent, so raising the
+pin without syncing `dshReleases` fails the build.
 
 **If the plugin UI vanishes after a dsh upgrade**, first check whether this pin blocked the whole bundle:
 `node -e "console.log(require('./package.json').engines)"` against the host version. Once the checklist

@@ -2,6 +2,17 @@
 
 本包遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式；版本号对齐 `package.json`，用户可用 `github:PlusQi/dsh-tokstats#vX.Y.Z` 固定安装（旧地址 `PlusQi/dsh-plugins` 仍可用，GitHub 301 自动重定向）。
 
+## [Unreleased]
+
+### Fixed
+
+- **宿主升级后三个插件的 UI 整块消失（真实缺陷，`0.2.1-rc.3` 上必现）**：宿主 nightly 升到 `0.2.1-rc.3`，而 `engines.dsh` 精确钉在 `0.2.1-rc.2`。宿主 `evaluatePluginCompatibility` 判定不兼容后，`loadProfileDirectory` 把整个包推进 `skippedBundles` 并**继续启动**——运行期一行日志都不打印，`lib/client.js` 也不会被加载，于是 tokprev 预告行、tokstats 面板、promptopt 按钮一起消失。用户看到的现象是「插件失效了」，而不是「宿主升级了」。
+  - **唯一的说话入口**：`dsh plugin --profile <p> list` 会打出 `Plugin dsh-tokstats@0.7.0 is incompatible with dsh 0.2.1-rc.3: requirements {"engines.dsh":"0.2.1-rc.2"}`。排查时先跑它，别在插件代码里找。
+  - **不要把 `runtime.json` 的 `desktopVersion` 当宿主版本**：rc.3 上它仍写着 `0.2.1-rc.2`（运行时包清单不跟随后续 nightly 升级）。宿主真实版本以 asar 内 `@deepseek-ai/dsh-app-boot/package.json` 为准——`getDshRuntimeVersion()` 读的就是它。
+  - **修法**：`engines.dsh` 抬到 `0.2.1-rc.3`，`dsh.compatibility.dshReleases` 同步（原来只列 `0.2.1-rc.2`，与 pin 自相矛盾）。抬之前对 rc.3 做了逐条契约复核：`rpc.handle` 两参、`sessionProjections` 单元字段集与 `snapshot` / `cachedSnapshot` 公开面、`sessionPersistence.stat` 的 `revision`、`storageDomain.open(spec)` 手写 spec、`GenerateOptions.provider` / `model` 必填、四条 UI slot（`conversation.composer.dock` / `conversation.input.right` / `main` / `sidebar.panellist`）——**七条全部成立**，rc.3 上未改一行 `lib/` 即可运行。
+  - **新增 guard PK-15 防复发**：`engines.dsh` 与 `dshReleases` 必须自洽（声明了 pin ⇒ 该版本必须在 `dshReleases` 里；有 `dshReleases` ⇒ 必须有 `engines.dsh`；`engines.dsh` 必须是语义化版本而非区间）。这三个字段在**不同维护步骤**里改（抬 pin / 补发布元数据），没有任何一步会顺带想起另一个，而后果不对称：pin 决定整包生死，`dshReleases` 只是人读元数据。反向验证：pin 写成 rc.4 / 删掉 `engines` 只留 `dshReleases` / 把 pin 写成区间 `^0.2.1-rc.3`，三种形态均变红。
+  - **纯元数据修复**：不碰 `lib/`、不抬 `stateVersion`、不清缓存、投影缓存与统计数据零损失（`0.7.0` 的冻结项未动）。link 安装下改完 `package.json` 即生效（无需重新 `plugin add`，宿主下次启动重新读 manifest）。
+
 ## [0.7.0] - 2026-10-24
 
 > **状态**：本段对应 tag `v0.7.0`。此后未发布内容重新挂回 `[Unreleased]` 段。

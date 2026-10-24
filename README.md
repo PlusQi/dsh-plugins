@@ -91,14 +91,16 @@ DSH 升级后若按钮点了没反应或一直报错，先对照维护文档里�
 
 | 宿主版本 | 状态 | 怎么验证 | 证据 |
 | --- | --- | --- | --- |
-| `0.2.1-rc.2` | **实测通过** | link 安装后重启 dsh web、刷新页面，逐个插件目检（tokprev 预告行 / tokstats 面板各区块 / promptopt 星标按钮） | `docs/INVARIANTS.md` 的 PK-05 / PK-08 / PK-10；`node scripts/check-plugin-structure.js` |
+| `0.2.1-rc.3` | **实测通过** | link 安装后重启 dsh web、刷新页面，逐个插件目检（tokprev 预告行 / tokstats 面板各区块 / promptopt 星标按钮） | `docs/INVARIANTS.md` 的 PK-05 / PK-08 / PK-10 / PK-15；`node scripts/check-plugin-structure.js` |
+| `0.2.1-rc.2` | 今已不再放行 | 与上一行为同一代码路径；v0.7.0 的 pin 曾是它，宿主升到 rc.3 后整包被跳过（详见下方自查） | 历史实测记录（v0.7.0 发布时） |
 
 声明方式是 `package.json` 的 `engines.dsh`，值是**精确版本而非区间**——宿主启动时按
 `engines.dsh` 单独判定兼容性（有该字段时忽略 `peerDependencies`），**不满足就整包跳过**，
 且只记进 `skippedBundles` 不打印。rc 阶段官方保留破坏权，所以这里宁可失败关闭，也不写一条
 没实测过的区间去「放行」未知版本。`dsh.compatibility.dshReleases` 是同一事实的描述性元数据
-（**无任何自动化消费方，仅人读**——实测宿主 asar 内 7026 个 `.js` 条目全文扫 `dshReleases` 0 命中，
-官方 `dsh-plugin-market` 只从 registry 读 `engines.dsh`，第三方 `dshmarket` 同样 0 命中）。
+（**无任何自动化消费方，仅人读**——实测宿主 asar（rc.3）内 7131 个 `.js` 条目全文扫 `dshReleases`
+**0 命中**，官方 `dsh-plugin-market` 只从 registry 读 `engines.dsh`，第三方 `dshmarket` 同样 0 命中）；
+两个字段的一致性由 guard 的 **PK-15** 静态兜住，抬 pin 忘同步 `dshReleases` 会被拦下。
 
 **升级 dsh 后插件 UI 消失**，先查是不是这个 pin 把整包挡掉了：`node -e "console.log(require('./package.json').engines)"`
 对照宿主版本；确认新版宿主上把下面的清单重验一遍，再抬 pin 并同步 `docs/MAINTAINING.md`「开发所对版本」。
