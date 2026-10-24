@@ -4,7 +4,19 @@
 
 ## [Unreleased]
 
-> **状态**：尚未打 tag。按本仓库约定（见 `docs/MAINTAINING.md`「发布到 GitHub」），未发布内容挂在 `[Unreleased]` 段下，打 tag 时再把段头改成 `## [X.Y.Z] - 日期`。`package.json` 当前为 `0.6.0`（v0.7.0 曾提版本后又退回，见 `80c023c`），且 `v0.7.0` / `v0.7.1` **均未打 tag**，因此 `#v0.7.x` 固定安装暂不可用。
+> **状态**：尚未打 tag。按本仓库约定（见 `docs/MAINTAINING.md`「发布到 GitHub」），未发布内容挂在 `[Unreleased]` 段下，打 tag 时再把段头改成 `## [X.Y.Z] - 日期`。
+
+> **破坏性变更（一项）**：**包名 `dsh-plugins` → `dsh-tokstats`**，profile 的依赖键随之变化，`dsh plugin update` / `remove` 用旧名会失效。迁移（一次性，**不需要清缓存**）：
+>
+> ```powershell
+> npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
+> npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
+> ```
+>
+> - **不丢投影缓存、不需要冷折叠**：投影单元 key、RPC 通道名、存储域名刻意保留旧名（详见 Changed「包名」条与 README 的冻结清单表）。
+> - **旧仓库地址仍可用**：`github.com/PlusQi/dsh-plugins` 会 301 跳到新地址，已发布 tag 与 `raw.githubusercontent.com` 图片链接不受影响。
+> - 插件页标题/描述不受影响（来自包级 `locale`，显示「Token 工具集」/「Token Toolbox」，与包名无关）。
+> - 本版本同时包含 E1 展示元数据与 E3 文档纠错（见 Added / Changed）。
 
 ### Fixed
 
@@ -55,6 +67,10 @@
   - **README 中英的固定版本安装示例**从 `#v0.2.3` 改为当前真实 tag `#v0.6.0`。原示例停在四个版本前的 tag 上，而这句话**没有任何自动检查**（PK-11 只校验 CHANGELOG 里的 tag 存在性），比 CHANGELOG 更容易腐坏。
   - **`dsh.compatibility.dshReleases` 的表述**（README 中英 + `docs/MAINTAINING.md`）从「供插件市场与读者查」改为「**无任何自动化消费方，仅人读**」，并附实测依据。原文会让维护者以为改动它有运行时影响。
   - **改名成本口径**（`docs/MAINTAINING.md`）从「爆炸半径是 10 个文件」改为「改动面 / 用户代价」两栏：改动面实测 4–9 文件 / 6–34 行（四档 diff），真正的成本是每个已装用户 `remove` + `add` 一次、以及跟改投影 key 时的一次全量冷折叠。「10 个文件」是代码文件口径且描述的是文本散布面（`dsh[-_]plugins` 共 144 处 / 16 个文件，含 6 个文档），不是改动面。
+- **包名 `dsh-plugins` → `dsh-tokstats`**（破坏性，迁移步骤见下方「破坏性变更」）。动机是对外辨识度：`dsh-plugins` 是中性名，社区目录里 name 含它的条目有 106 条，本项目淹没其中，而主打功能是 token 用量分析。仓库同步改名 `PlusQi/dsh-tokstats`，**旧地址仍可用**（GitHub 301 自动重定向，已实测），已发布 tag 与 README 图片链接不受影响。
+  - **R1 包身份**：`package.json` 的 `name`、`cordis.patch.yml` 三条 `name:`、`lib/client.js` 的 `__ModuleLoader__.load({id})` 四处齐动。
+  - **R2 派生命名空间**：三个 `LOCALE_NS_*`、`data-plugin-css` 前缀、`ctx.effect` 标签、日志前缀。纯进程内/纯展示，跟包名走。
+  - **冻结项（刻意保持历史名）**：投影单元 key `dsh-plugins.tokstats`、RPC 通道 `/dsh-plugins.tokstats` 与 `/dsh-plugins.promptopt`、存储域名 `dsh_plugins_*`。判据「有持久化或跨侧契约 ⇒ 冻结」。代价对照不对称：改 key 要让每个用户的全部缓存行作废、重付一次全量冷折叠，而宿主对 key 零校验（不是路径、无字符集限制），改名买不到任何正确性。README 中英与 `docs/MAINTAINING.md` 三处写明这是刻意冻结，防后人「顺手补全」。
 - **上下文长度分布由 2 的幂对数桶改为市面计费档 6 桶**：边界 `[4K, 8K, 16K, 32K, 64K, 128K]`（2 的幂，7 桶）→ `[8K, 32K, 128K, 256K, 512K]`（6 桶，标签 `[0,8K)` / `[8K,32K)` / `[32K,128K)` / `[128K,256K)` / `[256K,512K)` / `[512K,∞)`）。为什么这么切（2026-10-21，官方价格页 + 本机 4039 次真实调用实测）：
   - **32K 是最主流的低档上界**：阿里云百炼、火山方舟、智谱 GLM、腾讯混元 Hy3 preview 都在此设档（4 家）；**128K / 256K** 构成中段（阿里云 qwen3.5-flash 等、火山方舟 doubao-seed-2.0 系列都用这两点）；**512K** 是 MiniMax M3 的分界（≤512K / >512K 两档）。**200K** 是 Google Gemini / Anthropic 的历史分界，但 Anthropic 已于 2026 年取消 long-context 溢价（1M 全窗单一价），对以中国区厂商为主的观测面板意义弱于 256K，故不采用。
   - **旧划分对不上真实分布**：4K / 8K / 16K 没有任何厂商设档，旧方案里 `[4K,8K)` 在本机真实调用中是**完全空桶**，而 `[128K,∞)` 一桶吃掉 59% 调用 / 84% token——这就是旧桶划分失真的直接证据。
@@ -95,6 +111,7 @@
   - **与 client 内词典是两层不同东西**，本次一个字都没动 `lib/client.js`：包级 `locale` 是「宿主不启动 client 也能读的包元数据」（插件页 / 市场卡片），`LOCALE_NS_*` + `dicts` 是运行时界面文案。官方 96 个 client/bundle 包里 89 个都带包级 `locale/`，这层是事实标准。
   - 新增 guard 项 PK-13（文件与 `meta` 结构 / 语言 id 文件名 / `exports` 键 / `files` 项），失败信息写明「不改会怎样」。**缺 `meta` 外壳**（写成 `{"title":…}`）是最隐蔽的形态：JSON 合法、`npm test` 全绿、宿主不报错，标题静默回退成包名——已用反向验证确认 guard 能拦。
 - **位图店招 `docs/assets/icon-180.png`（180×180 RGBA，1.7 KB）与 `screenshots.json`**：社区目录只接受 GitHub 托管的位图（SVG 会被拒），沿用 `icon.svg` 的三柱造型按品牌色 `#4D6BFE` 独立渲染（原 SVG 用 `currentColor`，单独渲染时无继承色会变黑）。`screenshots.json` 列四张既有截图的相对路径并进 `files`——本机 `dshmarket@1.66.45` 尚不读它，属前瞻性准备（新版市场读）。两者都只服务对外展示，不进任何运行路径。
+- **PK-14 包身份一致性 guard**：以 `package.json` 的 `name` 为唯一真源，派生校验 `cordis.patch.yml` 每行 `name:`、`lib/client.js` 的 `__ModuleLoader__.load({id})`、每插件 `ns` 的包前缀与 `data-plugin-css` 前缀。此前这四处**没有任何静态检查**，而漏改一处（尤其是 `id:`）的后果是「插件 UI 整个消失、宿主不报错、guard 与全部测试全绿」——这是改名必须先落地本行的原因。
 
 ### Fixed
 
