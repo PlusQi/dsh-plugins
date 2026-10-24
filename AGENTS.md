@@ -38,15 +38,17 @@
 
 ## 硬规则
 
-1. **patch 行 name 必须是裸包名 `'dsh-plugins'`**：client 半边按包名发现；写成子路径只剩 host 半边；
+1. **patch 行 name 必须是裸包名 `'dsh-tokstats'`**：client 半边按包名发现；写成子路径只剩 host 半边；
 2. **client 模块图按包扁平**：所有插件实现在 `lib/client.js` 单文件内，禁止拆分文件或使用相对路径 `require`（factory 的 require 只认模块表词）；
 3. **host 按行分 fiber，client 每包单 fiber**：patch 每行建一个 host fiber（`config.plugin` 是 host 侧分发键，`lib/index.js` 的 `apply(ctx, config)` 据此分发——纯 UI 插件 host 半边为空，tokstats 的聚合器宿主在自己的行 fiber 上）；client boot manifest 每包只建一个条目且不传 config，`lib/client.js` 的 apply 无条件注册 `PLUGINS` 全部插件。新增插件必须同时在 `PLUGINS` 注册表注册，由 guard 静态校验防漂移（v0.2.3 前的"客户端按 config 分发 + 未注册告警"模型已废弃）；
-4. **每插件独立样式 tag**：经 `ensurePluginStyles` 注入 `data-plugin-css="dsh-plugins/<id>"`，禁止包级共享 `<style>`；
+4. **每插件独立样式 tag**：经 `ensurePluginStyles` 注入 `data-plugin-css="dsh-tokstats/<id>"`，禁止包级共享 `<style>`；
 5. **无构建步骤**：`lib/client.js` 即最终产物，禁止引入 TS / JSX / 构建脚本 / npm 运行时依赖；host 半边 `lib/index.js` 同理零依赖——只许 import `node:` 内建（fs/os/path 等），npm 包（含 cordis/zod）在 pnpm link 安装路径下不可解析；
 6. **兼容面**：所有宿主数据读取路径必须保持优雅降级（拿不到数据渲染 null，不抛错）；
-7. **每插件自带词典，语言跟随宿主**：`PLUGINS` 条目带 `ns`（`dsh-plugins.<id>`，带包前缀防撞车——重复注册同 `(ns, locale)` 会抛）与 `dicts`（`{ zh, en }`，zh 为键集真源，en 必须逐键对应）；slot 注册声明 `locale: ns` 取得 `t` 席位；`locale` 是硬依赖（与官方 UI 包一致），宿主无 locale 服务时整包不加载。文案一律写成 `{name}` 占位符整句模板（英文语序独立），带计数的文案按 `.one` / `.other` 成对出键。非语言记号（K/M、桶区间、`¥`）与时间格式（固定 24 小时制）不进词典。
+7. **每插件自带词典，语言跟随宿主**：`PLUGINS` 条目带 `ns`（`dsh-tokstats.<id>`，带包前缀防撞车——重复注册同 `(ns, locale)` 会抛）与 `dicts`（`{ zh, en }`，zh 为键集真源，en 必须逐键对应）；slot 注册声明 `locale: ns` 取得 `t` 席位；`locale` 是硬依赖（与官方 UI 包一致），宿主无 locale 服务时整包不加载。文案一律写成 `{name}` 占位符整句模板（英文语序独立），带计数的文案按 `.one` / `.other` 成对出键。非语言记号（K/M、桶区间、`¥`）与时间格式（固定 24 小时制）不进词典。
 
-规则 1 / 3 / 4 及 2 的 require 部分由 `scripts/check-plugin-structure.js` 自动检查（L1 静态证据）；规则 7 的 `ns` / `dicts` 字段**及 `ns` 的值**（必须等于 `dsh-plugins.<插件键>`）同样由它静态校验（漏带、值不对、引用未声明都拦，无界面文案的插件显式写 `ns: null`），键集一致性由 `npm test` 的双向断言兜住（官方靠 TS 类型在编译期保证，我们没有构建步骤）；规则 5 的 host 延伸（`lib/index.js` 只许 `node:` 前缀 import）由它静态校验。规则 6 及 7 的其余部分（整句模板、one/other 成对、记号不翻译）依赖评审。逐条不变量与其证据指针见 [docs/INVARIANTS.md](./docs/INVARIANTS.md)。
+规则 1 / 3 / 4 及 2 的 require 部分由 `scripts/check-plugin-structure.js` 自动检查（L1 静态证据）；规则 7 的 `ns` / `dicts` 字段**及 `ns` 的值**（必须等于 `dsh-tokstats.<插件键>`）同样由它静态校验（漏带、值不对、引用未声明都拦，无界面文案的插件显式写 `ns: null`），键集一致性由 `npm test` 的双向断言兜住（官方靠 TS 类型在编译期保证，我们没有构建步骤）；规则 5 的 host 延伸（`lib/index.js` 只许 `node:` 前缀 import）由它静态校验。规则 6 及 7 的其余部分（整句模板、one/other 成对、记号不翻译）依赖评审。逐条不变量与其证据指针见 [docs/INVARIANTS.md](./docs/INVARIANTS.md)。
+
+上述硬规则 1 / 4 / 7 里的包名都以 `package.json` 的 `name` 为**唯一真源**（PK-14）：patch 行 `name`、`ns` 前缀、`data-plugin-css` 前缀、`lib/client.js` 的 `__ModuleLoader__.load({id})` 四者必须与它一致，改包名时四处齐动，guard 静态兜住。
 
 **词典术语对照**（只列直译容易走样的，其余按字面翻；同一概念出现多种措辞是最难查的回归——0.3.0 曾出现过 `X in · Y out` 与中文语序混用）：
 

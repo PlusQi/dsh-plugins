@@ -17,7 +17,7 @@ import {
 	textOf,
 } from "./client-harness.mjs";
 
-const NS = "dsh-plugins.promptopt";
+const NS = "dsh-tokstats.promptopt";
 const CHANNEL = "/dsh-plugins.promptopt";
 // composer 卡片内部工具行的右端：模型选择座位之后、发送按钮之前。宿主契约
 // 给可点控件的位置——dock 是「环境读数带」，不该放可点控件。
@@ -73,7 +73,7 @@ test("词典：zh/en 键集一致（硬规则 7，缺键在英文界面会显示
 
 test("样式：按插件分 tag 注入，弹层 fixed 定位（硬规则 4 + 防裁剪回归）", () => {
 	setupClientBase();
-	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/promptopt");
+	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-tokstats/promptopt");
 	assert.ok(tag, "promptopt 应有自己的 style tag，不与其他插件共用");
 	// fixed 而非 absolute：座位在 composer 工具行里，absolute 会被祖先的
 	// overflow:hidden 裁剪（面板在 DOM 里存在但肉眼不可见——tokstats v0.3.0

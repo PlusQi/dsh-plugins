@@ -19,7 +19,7 @@ import {
 } from "./client-harness.mjs";
 import { TOKSTATS_BUCKET_BOUNDS } from "../lib/index.js";
 
-const NS = "dsh-plugins.tokstats";
+const NS = "dsh-tokstats.tokstats";
 const PANEL_ID = "tokstats";
 const CHANNEL = "/dsh-plugins.tokstats";
 const TOKSTATS_LABELS = ["[0,8K)", "[8K,32K)", "[32K,128K)", "[128K,256K)", "[256K,512K)", "[512K,∞)"];
@@ -193,7 +193,7 @@ test("I1：client 产物无 prices 字面量（成本维度已整体删除）", 
 
 test("样式回归：全局面板是页面级容器，且不再有弹层的 position:fixed", () => {
 	setupClient();
-	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats");
+	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-tokstats/tokstats");
 	assert.ok(tag, "tokstats 样式 tag 应已注入");
 	assert.match(tag.textContent, /\.dsh-tokstats-page\{/, "页面级容器规则应存在");
 	assert.match(tag.textContent, /height:100%/, "全局面板撑满主区");
@@ -208,7 +208,7 @@ test("每插件样式 tag 独立（硬规则 4）", () => {
 	assert.equal(tags.length, 3, "三个插件各一个 tag");
 	const ids = new Set(tags.map((t) => t.dataset.pluginCss));
 	assert.equal(ids.size, tags.length, "同一 id 不应重复注入");
-	assert.ok(ids.has("dsh-plugins/tokstats"));
+	assert.ok(ids.has("dsh-tokstats/tokstats"));
 });
 
 // ── 数据通道 ───────────────────────────────────────────────────────────────
@@ -1186,7 +1186,7 @@ test("TS-21 / TS-22：词典新增键 zh/en 成对、无 provider / model 两词
 test("样式：折叠列用斜纹/次要底色，不写死颜色（TS-22）", () => {
 	injectedStyleTags.length = 0;
 	setupClient();
-	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats");
+	const tag = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-tokstats/tokstats");
 	assert.ok(tag, "tokstats 样式 tag 应已注入");
 	assert.match(tag.textContent, /\.dsh-tokstats-barEpoch/, "折叠列样式规则应存在");
 	const rule = tag.textContent.match(/\.dsh-tokstats-barEpoch[^{]*\{([^}]*)\}/);
@@ -1230,9 +1230,9 @@ test("TS-23 / AC-4：日柱左轴 3 个刻度值，且最大刻度 = 峰值、�
 	assert.deepEqual(ticks.map((n) => textOf(n)), ["2", "1", "0"], "刻度值 = 峰值 / 峰值÷2 / 0");
 	// 刻度必须按**平方根刻度**定位：峰值÷2 的真实高度是 sqrt(0.5)≈70.7%，
 	// 不是 50%。把「2 / 1 / 0」等距摆开会让读者按线性读，与柱高对不上。
-	const topRule = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats").textContent
+	const topRule = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-tokstats/tokstats").textContent
 		.match(/\.dsh-tokstats-axisTickTop\{([^}]*)\}/);
-	const midRule = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-plugins/tokstats").textContent
+	const midRule = injectedStyleTags.find((t) => t.dataset.pluginCss === "dsh-tokstats/tokstats").textContent
 		.match(/\.dsh-tokstats-axisTickMid\{([^}]*)\}/);
 	assert.ok(topRule !== null && midRule !== null, "刻度定位规则应存在");
 	assert.match(topRule[1], /bottom:100%/, "峰值刻度顶到绘图区顶部");
@@ -1270,7 +1270,7 @@ test("TS-23：绘图区至少有 2 条水平网格线，且用主题变量（不
 
 	injectedStyleTags.length = 0;
 	setupClient();
-	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-plugins/tokstats").textContent;
+	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-tokstats/tokstats").textContent;
 	const lineRule = css.match(/\.dsh-tokstats-gridLine\{([^}]*)\}/);
 	assert.ok(lineRule !== null, "网格线样式规则应存在");
 	assert.match(lineRule[1], /var\(--dsw-alias-border-l1\)/, "网格线用 --dsw-alias-border-l1，不写死颜色");
@@ -1280,7 +1280,7 @@ test("TS-23：绘图区至少有 2 条水平网格线，且用主题变量（不
 test("TS-23 / AC-4：柱容器有列宽上限（3 列与 60 列都不溢出）、列少时居中", async () => {
 	injectedStyleTags.length = 0;
 	setupClient();
-	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-plugins/tokstats").textContent;
+	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-tokstats/tokstats").textContent;
 	const barRule = css.match(/\.dsh-tokstats-bar\{([^}]*)\}/);
 	assert.ok(barRule !== null, "柱样式规则应存在");
 	assert.match(barRule[1], /max-width:48px/, "柱宽上限 48px（AC-4）");
@@ -1398,7 +1398,7 @@ test("TS-17：输出副值在计费输入为 0 时给破折号，不编一个 0%
 test("AC-6：2:1 行用 stretch 对齐（不再用 start 留出空洞）", () => {
 	injectedStyleTags.length = 0;
 	setupClient();
-	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-plugins/tokstats").textContent;
+	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-tokstats/tokstats").textContent;
 	const rule = css.match(/\.dsh-tokstats-rowGrid\{([^}]*)\}/);
 	assert.ok(rule !== null, "2:1 行规则应存在");
 	assert.match(rule[1], /align-items:stretch/, "同行卡片等高（AC-6）");
@@ -1408,7 +1408,7 @@ test("AC-6：2:1 行用 stretch 对齐（不再用 start 留出空洞）", () =>
 test("AC-7：选中态用品牌色 + 反色文字（不是与容器底只差几级的 bg-layer-2）", () => {
 	injectedStyleTags.length = 0;
 	setupClient();
-	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-plugins/tokstats").textContent;
+	const css = injectedStyleTags.find((tag) => tag.dataset.pluginCss === "dsh-tokstats/tokstats").textContent;
 	const rule = css.match(/\.dsh-tokstats-switchOn\{([^}]*)\}/);
 	assert.ok(rule !== null, "选中态规则应存在");
 	assert.match(rule[1], /background:var\(--dsw-alias-brand-primary\)/, "选中态用品牌色底（AC-7）");

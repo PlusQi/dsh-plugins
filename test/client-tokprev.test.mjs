@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { textOf, setupClientBase, assertDictPair } from "./client-harness.mjs";
 
-const NS = "dsh-plugins.tokprev";
+const NS = "dsh-tokstats.tokprev";
 
 function setup(opts) {
 	const base = setupClientBase(opts);

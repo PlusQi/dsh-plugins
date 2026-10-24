@@ -1,4 +1,4 @@
-# dsh-plugins 维护说明
+# dsh-tokstats 维护说明
 
 > 状态：Active
 > 适用范围：本仓库的维护流程与插件实现细节
@@ -14,7 +14,7 @@
 ## 发布到 GitHub
 
 ```powershell
-git remote add origin git@github.com:PlusQi/dsh-plugins.git
+git remote add origin git@github.com:PlusQi/dsh-tokstats.git
 git push -u origin master
 git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # 必做：#vX.Y.Z 固定安装靠它，漏打则该版本号装不上；显式 ref 而非 --tags
 ```
@@ -29,22 +29,22 @@ git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # 必做：#vX.Y.Z 固定安�
 
 **`docs/INVARIANTS.md` 必须进包**：AGENTS.md 的路由表指向它，包内若缺这份文件，装包者拿到的就是一张指空的必读清单。同理，AGENTS.md 里不得再引用 `docs/specs/`（本地 gitignored，不随包分发）——需要引证据时引 `docs/INVARIANTS.md` 的行号。
 
-`docs/assets/` 的四张截图**不进包**（1.1MB，看 GitHub 上的 README 就够）：包内 README 的文本链接可达，但效果图会裂。要连图一起带，把 `docs/assets` 加进 `files`。
+`docs/assets/` 的四张截图**现在进包**（v0.7.0 起）：`screenshots.json` 用**相对路径**引用它们，而相对路径在打包形态下必须能找到文件，否则市场详情页拿到的是死链。它们也让包内 README 的效果图可见。四个文件合计约 575 KB，是包体增长的主要来源（`npm pack` 从 143 KB 增到约 660 KB）；若日后要瘦身，优先考虑改用 GitHub 绝对 URL 并撤掉 `files` 里的四条。
 
 ## 新增插件（本包的维护模式）
 
 1. `lib/client.js` 的 `PLUGINS` 注册表加一段：`css` + **`ns`** + **`dicts`** + `apply(ctx)`（helpers、组件、词典、`ctx.slots.inject(...)` 注册块都放这段里）：
    ```js
-   const LOCALE_NS_XXX = "dsh-plugins.xxx";
+   const LOCALE_NS_XXX = "dsh-tokstats.xxx";
    const xxxZh = { "row.title": "标题" };
    const xxxEn = { "row.title": "Title" };
    // PLUGINS 内：xxx: { css: xxxCss, apply: xxxApply, ns: LOCALE_NS_XXX, dicts: { zh: xxxZh, en: xxxEn } }
    ```
    `npm run guard` 会拦下漏带 `ns` / `dicts` 的注册块；该插件确无任何界面文案时显式写 `ns: null`。
-2. `cordis.patch.yml` 加一行（`name` 固定 `'dsh-plugins'`，`config.plugin` 指向注册表键；id 带自己的前缀，别撞 dsh-base/dsh-web-app 内置 id）：
+2. `cordis.patch.yml` 加一行（`name` 固定 `'dsh-tokstats'`，`config.plugin` 指向注册表键；id 带自己的前缀，别撞 dsh-base/dsh-web-app 内置 id）：
    ```yaml
    - id: xxx
-     name: 'dsh-plugins'
+     name: 'dsh-tokstats'
      config:
        plugin: xxx
    ```
@@ -59,7 +59,7 @@ git tag vX.Y.Z; git push origin refs/tags/vX.Y.Z   # 必做：#vX.Y.Z 固定安�
 - **client bundle 按包名发现**：host 按 entry 的 `name` 解析 `<name>/package.json` 读 `dsh.client` 声明，整包服务 `exports["./client"]`。行 name 必须是裸包名 `dsh-plugins`；写成 `dsh-plugins/xxx` 子路径只剩 host 半边（dsh-web-app 的 `web-startup` 行就是这种 host-only 子路径用法）。
 - **client 模块图按包扁平**：一个包的 client 半边 = 一个模块节点，包内不能拆多文件（bundle factory 里的 `require` 只认模块表词，相对路径直接抛错）。所有插件共用 `lib/client.js` 单文件靠分段纪律维护，这是"无构建步骤"的边界。
 - **host 按行分 fiber，client 每包单 fiber**：patch 每行建一个 **host** fiber，`config.plugin` 是 host 侧分发键（dsh-base 的 `tool-subagent` / `tool-subagent-fork` 是同名多行参考）。本包 `lib/index.js` 的 `apply(ctx, config)` 按该键分发：纯 UI 插件的 host 半边为空（行即存在/禁用锚点），tokstats 的 host 聚合器宿主在 `tokstats` 行的 fiber 上（行禁用 = 统计停摆）。**client 侧** **`__DSH_BOOT__`** **每包只建一个条目且不传 config**（`dsh-client-modules` 按包名构建 boot graph），因此 `lib/client.js` 的 apply 无条件注册 `PLUGINS` 全部插件，靠组件数据不可用时返回 null 降级；客户端不存在"第二行再跑一遍 apply"，也不可能在客户端按 `config.plugin` 分发。host 半边额外受模块图约束：pnpm link 安装下插件真实路径不在宿主 node\_modules 树内，**npm 包 import 不可解析**——`lib/index.js` 只用 `node:` 内建 + `apply(ctx, config)` 参数，不 import cordis/zod 等运行时依赖。
-- **样式按插件分 tag**：每插件一个 `data-plugin-css="dsh-plugins/<id>"` tag（`ensurePluginStyles` 幂等注入、随包 fiber 停止移除）；保持插件块独立颗粒度，日后单插件独立成包时连样式原样带走。
+- **样式按插件分 tag**：每插件一个 `data-plugin-css="dsh-tokstats/<id>"` tag（`ensurePluginStyles` 幂等注入、随包 fiber 停止移除）；保持插件块独立颗粒度，日后单插件独立成包时连样式原样带走。
 
 插件长大了要独立发布/独立 repo？把注册块连同 patch 行复制出去单开包即可（可参考本仓库已有插件的实现与打包方式）。
 
@@ -126,7 +126,7 @@ UI slot `conversation.composer.dock`（**只此一个**：`conversation.chat.ass
   - **后台队列的三条纪律**：单飞（全进程一个 drain）、去重（同会话只排一次）、每会话**重试预算 2 次**。预算上限是双向必需的——读不出日志的会话永远建不了基线，无上限会让队列永不空、`verifying` 恒 true、客户端无限重拉；只试一次又修不了 TS-19 的「水位再次回退」。校验结果先进一次性内存表 `fresh`（下一帧立即可见），不必等缓存写回落盘。
   - **已知未解**：7 个 v0 格式会话的 `readSession` 只返回旧检查点之前的事件（缓存 `seq` 与日志 `maxPlain` 比值 0.5%–1.5%），冷读也拿不到后续事件。这是宿主侧格式迁移的截断行为，插件无法绕过；表现是这些会话的用量仍偏低（`ark-codingplan/glm-5.3` 少 115 次）。若日后宿主修复，本机制自动受益，无需改插件。
 - **冷折叠耗时实测**（2026-10-21，本机 42 会话 / 24.1 MB 压缩日志）：清掉本插件缓存行后，从点开面板到出现首行数据 **6.7 s**；缓存建好后再次打开 **125 ms**；单次 `summary` RPC **26–31 ms**。冷折叠是一次性代价，`stateVersion` 变更的直接后果。**本次 3 → 6 升级后按同一口径复测**（清空 50 个会话文件的 tokstats 缓存行 → 点开面板 → 轮询到首行数值）：**8.3 s**，缓存建好后切窗口 **105 ms**——会话数由 42 增到 50，耗时同比放大，仍是一次性代价。**注意聚合数字会受检查点影响**：已结束会话走 `cachedSnapshot`（可能滞后于日志），活会话才冷读——实测同一时刻面板显示 2674 次而全量日志折叠是 2771 次，差额全部来自检查点滞后，不是归因缺陷。TS-19 落地后这个差额已由滞后补偿处理。
-- **不改的东西**：RPC 通道名 `/dsh-plugins.tokstats` 与端点名 `summary` 是浏览器侧契约，与投影单元 key 是两件独立的事，key 改名时通道名不动。
+- **不改的东西（v0.7.0 改名时的冻结清单）**：投影单元 key `dsh-plugins.tokstats`、RPC 通道名 `/dsh-plugins.tokstats` 与 `/dsh-plugins.promptopt`、存储域名 `dsh_plugins_*`——三者都是持久化或跨侧契约，**包名已改为 `dsh-tokstats` 但它们的值仍是历史名 `dsh-plugins`**。这不是遗留疏漏，是刻意冻结：改 key 等于让每个用户的全部缓存行作废、重付一次全量冷折叠，而宿主对 key 零校验（不是路径、无字符集限制），改名买不到任何正确性。判据一句话：**有持久化或跨侧契约 ⇒ 冻结；纯进程内/纯展示 ⇒ 跟着包名走**（所以 locale `ns` 与样式 tag 前缀已改成 `dsh-tokstats.*`）。
 
 > **改 host 半边必须重启宿主进程（踩过的坑，2026-10-21）**
 >
@@ -168,12 +168,19 @@ v0.5.0 起初把 promptopt 放在 `conversation.composer.dock`（与 tokprev 预
 
 ## 分发与元数据纪律
 
-- **本包没有发布到任何 registry，只能从 GitHub 安装**。npm 上的 `dsh-plugins@0.1.2` 是 MeCKodo 的插件市场 CLI（bin `dsp`），与本项目无关；dshfind 等索引已把两者混成一条记录（og:description 是本项目文案，Version / 安装命令指向别人的包）。
+- **本包没有发布到任何 registry，只能从 GitHub 安装**。npm 上的 `dsh-plugins@0.1.2` 是 MeCKodo 的插件市场 CLI（bin `dsp`），与本项目无关；dshfind 等索引曾把两者混成一条记录（og:description 是本项目文案，Version / 安装命令指向别人的包）。
   - 因此**任何文档都不得写「从 npm 装 `dsh-plugins`」**——照做会装上别人的包，且失败时表现为「插件没生效」而不是「装错了」。README 中英已删掉该句并改成显式警告。
-  - 包名改 scoped（`@plusqi/dsh-plugins` 实测 404 空闲）作为**独立决策**待维护者裁决，不在本变更内。成本分两栏看，**不要再用「文件数」当成本代理**：
-    - **改动面（代码侧，实测四档 diff）**：4–9 个文件 / 6–34 行（R1 包身份 4 文件 6 行 → R1+R2+R3 含投影 key 9 文件 34 行），guard 与 248 条测试全程绿。变量只有「跟不跟改派生命名空间与投影 key」。
-    - **用户代价（真正的成本，与改多少行无关）**：① 依赖键变更 ⇒ `dsh plugin update/remove` 用旧名失效，每个已装用户必须 `remove` + `add` 一次；② 若跟改投影 key（R3），所有旧缓存行作废 ⇒ 每人一次全量冷折叠（本机 50 会话 8.3 s，实际已 77 个缓存文件、更久）。
-    - 早先写的「爆炸半径是 10 个文件」是**代码文件口径**、且描述的是**文本散布面**（`dsh[-_]plugins` 共 144 处 / 16 个文件，含 6 个文档），不是改动面。历史与实测数据见本地 `docs/specs/active/ASSESS-pack-rename.md` §2.1–§2.4（不随仓库分发）。
+- **改名已执行（v0.7.0）：`dsh-plugins` → `dsh-tokstats`**。当时的决策记录与成本实测见本地 `docs/specs/active/ASSESS-pack-rename.md`（不随仓库分发），结论留在这里：
+  - **改动面（代码侧）**：4–9 个文件 / 6–34 行。本次实际做了 R1 包身份 + R2 派生命名空间，**R3（投影 key）刻意不做**。
+  - **用户代价**：依赖键变更 ⇒ `dsh plugin update/remove` 用旧名失效，每个已装用户必须 `remove` + `add` 一次（README 中英已写迁移步骤）。**缓存零损失**——因为冻结项没跟改。
+  - **冻结清单（改名时必须不动的标识，[判据：有持久化或跨侧契约 ⇒ 冻结]**）：
+    | 标识 | 值 | 位置 |
+    | --- | --- | --- |
+    | 投影单元 key | `dsh-plugins.tokstats` | `lib/index.js` `TOKSTATS_KEY` |
+    | 存储域名 | `dsh_plugins_tokstats` / `dsh_plugins_promptopt` | `lib/index.js`（`UNIT_NAME_RE` 不允许点号） |
+    | RPC 通道名 | `/dsh-plugins.tokstats` / `/dsh-plugins.promptopt` | `lib/client.js` + `lib/index.js` 两侧契约 |
+  - **guard 是这次的防线**：`PK-14` 以 `package.json` 的 `name` 为唯一真源，派生校验 patch 行 `name`、`client.js` 的 `__ModuleLoader__.load({id})`、`ns` 前缀、`data-plugin-css` 前缀。改名时**先补 guard 再动名字**——漏改 `id:` 的形态是「插件 UI 整个消失而 guard 与测试全绿」（ASSESS §3.5 实测）。
+  - 早先写的「爆炸半径是 10 个文件」是**代码文件口径**、且描述的是**文本散布面**（`dsh[-_]plugins` 共 144 处 / 16 个文件，含 6 个文档），不是改动面。**不要再用「文件数」当成本代理。**
 - **`engines.dsh` 写精确版本，不写区间**。宿主 `evaluatePluginCompatibility` 的判定是：**有 `engines.dsh` 时它单独决定、忽略 `peerDependencies`**；不满足就整包跳过（`loadProfileDirectory` 把它记进 `skippedBundles`，**不打印任何东西**）。写一条没实测过的区间等于替未知版本放行，而 rc 阶段官方保留破坏权。当前 pin 是 `0.2.1-rc.2`；升级宿主后按 README「支持的 dsh 版本」的三步重验，再抬 pin 并同步本文件「开发所对版本」。
   - `dsh.compatibility.dshReleases` 是**描述性**元数据（**无任何自动化消费方，仅人读**），只列实测过的版本。实测依据（2026-10-23 复核，宿主 `0.2.1-rc.2`）：asar 内 7026 个 `.js` 条目全文扫 `dshReleases` **0 命中**；官方 `dsh-plugin-market` 只从 registry 读 `engines.dsh`；第三方 `dshmarket@1.66.45` 同样 **0 命中**。它和 `engines.dsh` 必须表达同一事实，不能一个说兼容、另一个把整包挡掉。
 - **`icon` 字段**：值是包内相对路径（绝对路径与 `file:` 之类的 scheme 会被宿主拒绝），宿主按 SVG/PNG/JPEG/WebP 读成 data URL 内联，**上限 256 KiB**，且必须留在 manifest 所在目录内。当前 `icon.svg` 与侧栏图标同一造型、单色 `currentColor`。`files` 必须含它，否则 git 安装后读不到（宿主此时只回一条 `meta.error`，界面表现为没图标）。

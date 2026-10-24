@@ -1,4 +1,4 @@
-# dsh-plugins
+# dsh-tokstats
 
 简体中文 | [English](./README.en.md)
 
@@ -20,7 +20,7 @@
 
 插件的界面文案都走宿主 locale 服务，**跟随 DSH 设置 → 常规 → Language**，插件自身没有语言开关。
 
-- 词典按插件划分命名空间：`dsh-plugins.tokprev`、`dsh-plugins.tokstats` 与 `dsh-plugins.promptopt`。
+- 词典按插件划分命名空间：`dsh-tokstats.tokprev`、`dsh-tokstats.tokstats` 与 `dsh-tokstats.promptopt`。
 - promptopt 是**两轴分离**：界面文案跟随宿主语言，而**整理产物跟随草稿语言**（英文界面照样出中文整理结果）——产物是内容、不是 UI 文案，不进词典。
 - 用户没显式选过时，宿主取浏览器语言；非 zh/en 回落 en。
 - `locale` 是本包的**硬依赖**（与官方 UI 包一致）：宿主没有 locale 服务（或被手动禁用）时整包不加载——表现为插件 UI 消失且无日志，而不是半中半英。
@@ -112,19 +112,33 @@ DSH 升级后若按钮点了没反应或一直报错，先对照维护文档里�
 
 前置：Node.js、git、pnpm（`npm i -g pnpm`）。私有仓库也可安装（pnpm 走你本机 git 凭据）。
 
-> **只能从 GitHub 装**。npm 上的 `dsh-plugins` 是**别人的包**（一个插件市场 CLI，与本项目无关），
-> `add dsh-plugins` 会装错；本包也没有在任何 registry 上发布。
+> **只能从 GitHub 装，本包没有在任何 registry 上发布。** 注意 `dsh-plugins` 这个名字在 npm 上
+> 属于**别人**（一个插件市场 CLI，与本项目无关）——本包自 v0.7.0 起已改名为 `dsh-tokstats`，
+> 但避免误会仍要说明：**不要 `add dsh-plugins`，那不是本项目。**
 
 ```powershell
 # 从 GitHub 安装（其他用户）
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
 
 # 固定版本：# 后可跟 tag / 分支 / commit
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-plugins#v0.6.0
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats#v0.7.0
 
 # 本机开发链接（改代码重启即生效，路径换成你本地的仓库位置）
-npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-tokstats
 ```
+
+> **从旧名升级（v0.7.0 起包名由 `dsh-plugins` 改为 `dsh-tokstats`）**：依赖键变了，
+> `update` 用旧名会失效，必须**先 remove 再 add**：
+>
+> ```powershell
+> npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
+> npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
+> ```
+>
+> 仓库地址同步改为 `github.com/PlusQi/dsh-tokstats`——**旧地址仍可用**（GitHub 301 自动重定向，
+> 已实测），已发布 tag 与 README 里指向 `raw.githubusercontent.com` 的图片都不受影响。
+> **投影缓存不会丢**：投影单元 key、RPC 通道名与存储域名都刻意保留旧名（见下节末说明），
+> 所以这次改名不需要冷折叠。
 
 安装后**重启 dsh web 进程**并刷新页面（profile 组合仅启动时生效）。
 安装位置：`$DSH_HOME/profiles/web/`（默认 `~/.dsh`）。`dsh plugin` 是 pnpm 转发器：
@@ -135,10 +149,10 @@ npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-plugins
 
 ```powershell
 # 更新：重新解析安装 spec（未固定 ref 则拉默认分支最新提交）
-npx @deepseek-ai/dsh plugin --profile web update dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web update dsh-tokstats
 
 # 整包卸载（自动从层列表摘除）
-npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
+npx @deepseek-ai/dsh plugin --profile web remove dsh-tokstats
 ```
 
 临时关掉单个插件（不动代码）：编辑 `~/.dsh/profiles/web/cordis.patch.yml` 追加
@@ -149,6 +163,16 @@ npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
 ```
 
 重启生效。注意：`disabled` 只摘除该行的**宿主侧** fiber，浏览器侧界面是否卸载取决于**包内是否还有任一行存活**——所以对纯界面插件（如 tokprev）禁用一行**不会**让它从页面上消失。需要按插件独立开关，请把该插件拆成独立包（原因与步骤见维护文档）。
+
+> **为什么有些名字已经改不动了**：v0.7.0 把包名改成 `dsh-tokstats`，但下面这些标识**刻意保留**旧名 `dsh-plugins`——它们是持久化或跨侧契约，不是展示名：
+>
+> | 标识 | 值 | 为什么不能改 |
+> | --- | --- | --- |
+> | 投影单元 key | `dsh-plugins.tokstats` | 进缓存字段名；改了等于让每个用户的全部缓存行作废、重付一次全量冷折叠 |
+> | RPC 通道名 | `/dsh-plugins.tokstats` · `/dsh-plugins.promptopt` | 浏览器侧与宿主侧两边的契约 |
+> | 存储域名 | `dsh_plugins_tokstats` · `dsh_plugins_promptopt` | 持久化；且宿主 `UNIT_NAME_RE` 不允许点号 |
+>
+> 判据一句话：**有持久化或跨侧契约 ⇒ 冻结；纯进程内/纯展示 ⇒ 跟着包名走**。所以界面文案的词典命名空间、样式 tag 前缀这些已经改成 `dsh-tokstats.*`，而上面三类别动。
 
 ## 维护
 

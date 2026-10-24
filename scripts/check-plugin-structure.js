@@ -12,6 +12,19 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const problems = [];
 const warnings = [];
 
+// ── 包名真源：package.json 的 name（PK-14）──
+//
+// 此前本脚本把所有带包名的地方（patch 行 name、ns 前缀、样式 tag 前缀）都**硬编码**成
+// 字面量 'dsh-plugins'。这带来两个问题：
+//   1. 改名时必须手工同步 guard 里每一处，漏一处就是「guard 报了但报错了对象」；
+//   2. 更糟的是**查不出**「包名改了、别处没跟上」——硬编码让 guard 只认旧名，
+//      于是它拦下的永远是「你按新名改了」，而真正危险的「你只改了一半」反而全绿。
+// 改为从 manifest 派生后，所有派生物都相对**当前包名**校验，改名只需改 manifest。
+const pkgName = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).name;
+if (typeof pkgName !== "string" || pkgName === "") {
+	problems.push("package.json: name 不是非空字符串 —— 包身份缺失，patch 行与 client 半边的发现机制全部失去基准（PK-14）");
+}
+
 // ── 解析 cordis.patch.yml 的插件条目（行级轻量解析，格式固定三字段） ──
 const patchPath = join(root, "cordis.patch.yml");
 const patchText = readFileSync(patchPath, "utf8");
@@ -50,12 +63,12 @@ if (pluginsBlock === null) {
 	}
 }
 
-// ── 硬规则 1：patch 行 name 必须是裸包名 'dsh-plugins' ──
+// ── 硬规则 1：patch 行 name 必须是裸包名（等于 package.json 的 name） ──
 for (const row of rows) {
 	if (row.name === null) {
 		problems.push(`cordis.patch.yml L${row.line} (id: ${row.id}): 缺少 name 字段 —— client 半边无法按包名发现`);
-	} else if (row.name !== "dsh-plugins") {
-		problems.push(`cordis.patch.yml L${row.line} (id: ${row.id}): name 为 '${row.name}'，必须是裸包名 'dsh-plugins'（子路径只剩 host 半边）`);
+	} else if (row.name !== pkgName) {
+		problems.push(`cordis.patch.yml L${row.line} (id: ${row.id}): name 为 '${row.name}'，必须是裸包名 '${pkgName}'（子路径只剩 host 半边；该值必须等于 package.json 的 name —— PK-14）`);
 	}
 }
 
@@ -69,8 +82,8 @@ for (const row of rows) {
 }
 
 // ── 硬规则 4：样式必须经 ensurePluginStyles 按插件分 tag ──
-if (!clientText.includes('data-plugin-css="dsh-plugins/')) {
-	problems.push("lib/client.js: 未找到 data-plugin-css=\"dsh-plugins/<id>\" 样式 tag 机制 —— 硬规则 4（样式按插件分 tag）被破坏");
+if (!clientText.includes(`data-plugin-css="${pkgName}/`)) {
+	problems.push(`lib/client.js: 未找到 data-plugin-css="${pkgName}/<id>" 样式 tag 机制 —— 硬规则 4（样式按插件分 tag）被破坏；前缀必须是包名 '${pkgName}'（PK-14）`);
 }
 for (const [key, meta] of registered) {
 	if (!meta.css || !meta.apply) {
@@ -79,14 +92,14 @@ for (const [key, meta] of registered) {
 	// 硬规则 7 的静态兜底：新插件漏带词典时没有任何运行时报错（只是文案不翻译），
 	// 必须在这里拦。无 UI 文案的插件（纯 host 半边）显式写 ns: null 声明。
 	if (!meta.nsNull && (!meta.ns || !meta.dicts)) {
-		problems.push(`lib/client.js PLUGINS.${key}: 缺 ${!meta.ns ? "ns" : "dicts"} 字段 —— 硬规则 7 要求每插件自带词典（ns = "dsh-plugins.${key}"、dicts = { zh, en }）；该插件确无任何界面文案时显式写 ns: null`);
+		problems.push(`lib/client.js PLUGINS.${key}: 缺 ${!meta.ns ? "ns" : "dicts"} 字段 —— 硬规则 7 要求每插件自带词典（ns = "${pkgName}.${key}"、dicts = { zh, en }）；该插件确无任何界面文案时显式写 ns: null`);
 	}
 	// PK-07 的 ns **值**校验：字段在不在是一回事，值对不对是另一回事。
-	// 规范要求 ns 带包前缀（`dsh-plugins.<键>`）防撞车——撞车时重复注册同 (ns, locale)
+	// 规范要求 ns 带包前缀（`<包名>.<键>`）防撞车——撞车时重复注册同 (ns, locale)
 	// 会抛，整个包在浏览器侧起不来。漏前缀的 ns 与插件键同名时同样会撞。
 	//
 	// 两种写法都查：`ns: LOCALE_NS_X`（标识符引用，去 client 里找字面量）与
-	// `ns: "dsh-plugins.x"`（直接字面量）。只查前者会留下后者这个后门。
+	// `ns: "<包名>.x"`（直接字面量）。只查前者会留下后者这个后门。
 	if (!meta.nsNull && meta.ns) {
 		let nsValue = meta.nsLiteral;
 		if (nsValue === null && meta.nsRef !== null) {
@@ -97,8 +110,8 @@ for (const [key, meta] of registered) {
 				nsValue = decl[1];
 			}
 		}
-		if (nsValue !== null && nsValue !== `dsh-plugins.${key}`) {
-			problems.push(`lib/client.js PLUGINS.${key}: ns 值为 '${nsValue}'，必须是 'dsh-plugins.${key}'（硬规则 7 要求带包前缀防撞车；重复注册同 (ns, locale) 会抛，整包在浏览器侧起不来）`);
+		if (nsValue !== null && nsValue !== `${pkgName}.${key}`) {
+			problems.push(`lib/client.js PLUGINS.${key}: ns 值为 '${nsValue}'，必须是 '${pkgName}.${key}'（硬规则 7 要求带包前缀防撞车；重复注册同 (ns, locale) 会抛，整包在浏览器侧起不来；前缀必须等于 package.json 的 name —— PK-14）`);
 		}
 	}
 }
@@ -108,6 +121,26 @@ for (const [i, line] of clientText.split("\n").entries()) {
 	if (/require\(\s*["']\.\.?\//.test(line)) {
 		problems.push(`lib/client.js L${i + 1}: 相对路径 require（模块表只认包名/模块词，运行时直接抛错）`);
 	}
+}
+
+// ── PK-14：client bundle 注册的 id 必须等于 package.json 的 name ──
+//
+// 这是改名时**唯一会造成静默失效**的一处，也是本项存在的全部理由。宿主的
+// `client-modules` 用 `exactPackageSpecifier(row.name)` 得到期望包名，再拿
+// `nearestPackage` 校验「最近祖先 manifest 的 name === 期望名」，然后按
+// `__ModuleLoader__.load({id})` 里声明的 id 建图——**两处字符串相等是运行时的硬事实，
+// 但宿主不做显式校验**：不等时报
+// `loaded without registering "<name>" via __ModuleLoader__.load`，
+// 表现是**插件 UI 整个消失、宿主不打印任何东西**。
+//
+// 实测过（ASSESS §3.5）：改了 package.json name + 3 条 patch 行 + guard，但漏改
+// 这里的 id → guard OK、248 条测试全绿，而插件实际不渲染。因为没有这一项时，
+// 上述三处的「绿」与浏览器侧能否加载**完全无关**。
+const declaredId = /window\.__ModuleLoader__\.load\(\s*\{\s*\n\s*id:\s*["']([^"']+)["']/.exec(clientText);
+if (declaredId === null) {
+	problems.push(`lib/client.js: 找不到 __ModuleLoader__.load({ id: "…" }) 的 id 声明 —— 客户端 bundle 无法被宿主按包名建图，整个客户端半边不加载（PK-14）`);
+} else if (declaredId[1] !== pkgName) {
+	problems.push(`lib/client.js L1-2: bundle 注册的 id 为 '${declaredId[1]}'，但 package.json 的 name 是 '${pkgName}' —— 宿主按包名建图、按 id 认领，二者不等时该行不会进入 client 图：插件 UI 整个消失且宿主不报错（只有浏览器控制台一条 loaded without registering）（PK-14）`);
 }
 
 // ── host 半边源码（PK-05 / PK-08 共用） ──
