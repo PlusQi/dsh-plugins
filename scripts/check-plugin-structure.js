@@ -462,6 +462,38 @@ if (!localeCovered) {
 	problems.push(`package.json files: 缺少 "locale"（现有 ${filesList.join(", ") || "空"}）—— npm / git 安装按 files 白名单打包，locale 会被丢掉；本机 link 安装是 junction 直通仓库、看不出这个问题，只能靠 "npm pack --dry-run" 验（PK-13）`);
 }
 
+// ── PK-15：`engines.dsh` 与 `dsh.compatibility.dshReleases` 必须表达同一事实 ──
+//
+// 这条是 v0.7.0 在本机实际踩出来的：宿主升到 `0.2.1-rc.3`，而 `engines.dsh` 精确钉在
+// `0.2.1-rc.2`，宿主 `loadProfileDirectory` 判定不兼容 → 整个包进 `skippedBundles`、
+// **一行日志都不打印** → 三个插件的 UI 静默消失（表现是「插件坏了」，不是「宿主升级了」）。
+//
+// 为什么必须有静态检查：这两个字段在**不同文件的不同维护步骤**里改——`engines.dsh` 是
+// 「抬 pin」时改，`dshReleases` 是「补发布元数据」时改；没有任何一步会顺带想起另一个。
+// 而两者不一致的后果不对称：`engines.dsh` 决定生死，`dshReleases` 只是人读的描述性元数据。
+// 于是「pin 抬了、dshReleases 忘了」⇒ 读者按 README 的版本表去装、装完怀疑插件；反过来
+// 「dshReleases 写了新版本、pin 没抬」⇒ 文档宣称支持、实际整包被跳过。
+//
+// 判据刻意只要求「声明了 dsh 版本时，该版本必须出现在 dshReleases 里」，不要求两边键集
+// 完全相等：`dshReleases` 允许保留历史实测版本（它描述的是「实测过哪些」），而 `engines.dsh`
+// 只能有一个值。相等要求会逼人在抬 pin 时删掉历史记录，反而丢证据。
+const DSH_VERSION_SHAPE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const enginesDsh = pkg.engines?.dsh;
+const declaredReleases = pkg.dsh?.compatibility?.dshReleases;
+if (enginesDsh !== undefined) {
+	if (typeof enginesDsh !== "string" || !DSH_VERSION_SHAPE.test(enginesDsh)) {
+		problems.push(`package.json: engines.dsh 为 ${JSON.stringify(enginesDsh)} —— 宿主 evaluatePluginCompatibility 按 semver 判定，非语义化版本（如误写成区间或空串）会让宿主抛错或整包跳过（PK-15）`);
+	} else if (declaredReleases === undefined || declaredReleases === null || typeof declaredReleases !== "object" || Array.isArray(declaredReleases)) {
+		problems.push(`package.json: 声明了 engines.dsh（${enginesDsh}）但缺少 dsh.compatibility.dshReleases 对象 —— README「支持的 dsh 版本」表与插件市场都读它；两边必须表达同一事实（PK-15）`);
+	} else if (!Object.hasOwn(declaredReleases, enginesDsh)) {
+		problems.push(`package.json: engines.dsh 钉的是 ${enginesDsh}，但 dsh.compatibility.dshReleases 里没有这一项（现有 ${Object.keys(declaredReleases).join(", ") || "空"}）—— 抬 pin 时忘了同步文档元数据：宿主按 engines.dsh 放行，读者的版本表却停在旧版本（PK-15）`);
+	}
+} else if (declaredReleases !== undefined && declaredReleases !== null) {
+	// 反向：只写 dshReleases 不写 engines.dsh ⇒ 宿主忽略 peerDependencies 后「无条件放行」，
+	// 声明式兼容表就成了唯一的说法，而它没有自动化消费方。
+	problems.push(`package.json: 写了 dsh.compatibility.dshReleases 却没有 engines.dsh —— 宿主不按该表判定兼容性，等于对任意宿主版本无条件放行；两个字段要么都写、要么都不写（PK-15）`);
+}
+
 // ── 汇总输出 ──
 for (const w of warnings) console.log("[WARN] " + w);
 if (problems.length > 0) {
