@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-24
+
+> **状态**：本段对应 tag `v0.7.1`。此后未发布内容重新挂回 `[Unreleased]` 段。
+
 ### Fixed
 
 - **宿主升级后三个插件的 UI 整块消失（真实缺陷，`0.2.1-rc.3` 上必现）**：宿主 nightly 升到 `0.2.1-rc.3`，而 `engines.dsh` 精确钉在 `0.2.1-rc.2`。宿主 `evaluatePluginCompatibility` 判定不兼容后，`loadProfileDirectory` 把整个包推进 `skippedBundles` 并**继续启动**——运行期一行日志都不打印，`lib/client.js` 也不会被加载，于是 tokprev 预告行、tokstats 面板、promptopt 按钮一起消失。用户看到的现象是「插件失效了」，而不是「宿主升级了」。
@@ -264,7 +268,8 @@
 - 双语 README（中文默认 + English）及效果示意图。
 - 设计决策记录 SPEC-tokprev.md（本地留存，不随仓库分发）。
 
-[Unreleased]: https://github.com/PlusQi/dsh-tokstats/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/PlusQi/dsh-tokstats/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/PlusQi/dsh-tokstats/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/PlusQi/dsh-tokstats/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/PlusQi/dsh-plugins/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/PlusQi/dsh-plugins/compare/v0.5.1...v0.5.2

@@ -123,7 +123,7 @@ DSH 升级后若按钮点了没反应或一直报错，先对照维护文档里�
 npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
 
 # 固定版本：# 后可跟 tag / 分支 / commit
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats#v0.7.0
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats#v0.7.1
 
 # 本机开发链接（改代码重启即生效，路径换成你本地的仓库位置）
 npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-tokstats

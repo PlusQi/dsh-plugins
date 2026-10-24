@@ -128,7 +128,7 @@ Prerequisites: Node.js, git, pnpm (`npm i -g pnpm`). Private repos work too (pnp
 npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
 
 # Pin a version: # accepts a tag / branch / commit
-npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats#v0.7.0
+npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats#v0.7.1
 
 # Local dev link (edit + restart to see changes; replace with your local repo path)
 npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-tokstats
