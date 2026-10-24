@@ -133,13 +133,20 @@ npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-tokstats
 ```
 
 > **Upgrading from the old name** (the package name changed from `dsh-plugins` to `dsh-tokstats` in
-> v0.7.0): the dependency key changed, so `update` with the old name fails — you must
-> **remove, then add**:
+> v0.7.0): the dependency key changed, so you must **remove, then add**:
 >
 > ```powershell
 > npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
 > npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
 > ```
+>
+> ⚠️ **What happens if you skip it**: `update dsh-plugins` fails on the old name — and worse, the
+> **plugin UI disappears silently**. pnpm tolerates "dependency key `dsh-plugins` pointing at a package
+> named `dsh-tokstats`" (`pnpm install` succeeds; it prints `dsh-plugins <- dsh-tokstats 0.7.0`), but the
+> host's `client-modules` takes the dependency key as the expected package name and compares it with the
+> manifest's `name`; when they differ that **row never enters the client graph** — the UI simply is not
+> there, with no error in the host log. This chain was verified locally, which is why the order above is
+> "remove first", not "just update".
 >
 > The repository moved to `github.com/PlusQi/dsh-tokstats` — **the old address still works** (GitHub
 > answers with a 301; verified). Published tags and the `raw.githubusercontent.com` image links in the

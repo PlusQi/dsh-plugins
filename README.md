@@ -127,13 +127,18 @@ npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats#v0.7.0
 npx @deepseek-ai/dsh plugin --profile web add link:D:\path\to\dsh-tokstats
 ```
 
-> **从旧名升级（v0.7.0 起包名由 `dsh-plugins` 改为 `dsh-tokstats`）**：依赖键变了，
-> `update` 用旧名会失效，必须**先 remove 再 add**：
+> **从旧名升级（v0.7.0 起包名由 `dsh-plugins` 改为 `dsh-tokstats`）**：依赖键变了，必须**先 remove 再 add**：
 >
 > ```powershell
 > npx @deepseek-ai/dsh plugin --profile web remove dsh-plugins
 > npx @deepseek-ai/dsh plugin --profile web add github:PlusQi/dsh-tokstats
 > ```
+>
+> ⚠️ **不迁移会怎样**：`update dsh-plugins` 用旧名会失效；更糟的是**插件 UI 会静默消失**——
+> pnpm 容忍「依赖键 `dsh-plugins` 指向包名 `dsh-tokstats`」这种不匹配（`pnpm install` 不报错，
+> 显示成 `dsh-plugins <- dsh-tokstats 0.7.0`），但宿主 `client-modules` 会拿依赖键当期望包名去
+> 校验 manifest 的 `name`，不相等就**该行不进入 client 图**：界面整块不见、宿主日志里没有错误。
+> 本机实测确认了这个判定链，所以这一节给的顺序是「先 remove」而不是「直接 update」。
 >
 > 仓库地址同步改为 `github.com/PlusQi/dsh-tokstats`——**旧地址仍可用**（GitHub 301 自动重定向，
 > 已实测），已发布 tag 与 README 里指向 `raw.githubusercontent.com` 的图片都不受影响。
