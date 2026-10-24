@@ -29,6 +29,7 @@
 | PK-11 | `CHANGELOG.md` 的版本段与底部链接区**双向一一对应**：每个 `## [X.Y.Z]` 段落必须有 `[X.Y.Z]:` 链接行，每条链接行必须有对应段落（无悬空）；`[Unreleased]` 必须存在且基线指向**最新已发布版本**（`...compare/v<最新>...HEAD`）；链接里引用的每个 `vX.Y.Z` **必须是本地真实存在的 tag**（指向不存在的 tag 在 GitHub 上是硬 404 且不会自愈——未发布内容应挂在 `[Unreleased]` 段下，打 tag 时才改名为版本段） | guard「CHANGELOG 版本段 ↔ 底部链接区一一对应」（四条：段缺链接 / 链接悬空 / Unreleased 基线 / tag 存在性） | L1 |
 | PK-12 | `package.json` 的 `version` **等于 CHANGELOG 最新已发布版本段**（第一个 `## [X.Y.Z]`）。未发布的改动挂在 `[Unreleased]` 下、不抬版本号；打 tag 时同时抬版本号并把段落定版——这条检查让「版本号」与「已发布事实」无法各自漂移（此前出现过 `package.json` 0.7.1 / 最新已发布段 0.6.0 / `v0.7.1` tag 不存在三者并存） | guard「package.json 版本 ↔ CHANGELOG 最新已发布段」 | L1 |
 | PK-13 | **包级展示元数据可被宿主解析**：`locale/en.json` 必须存在、可解析、带 `meta` 外壳且 `meta.title` / `meta.description` 均非空；`locale/*.json` 的文件名必须是语言 id 且与 `en.json` 同目录；`package.json` 的 `exports` 必须放行 `"./locale/*.json"`（否则 `optionalResourcePath` 抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`）；`files` 必须含 `locale`（否则 npm / git 安装按白名单丢文件；本机 junction 的 link 安装掩盖此问题）。缺任一门宿主 `readPluginMeta` 都**静默**回退到 `package.json.name`——插件页标题显示原始包名 `dsh-plugins`，且 `npm test` 全绿 | guard「PK-13：包级展示元数据」（四项：`locale` 文件与 `meta` 结构 / 语言 id 文件名 / `exports` 键 / `files` 项） | L1 |
+| PK-14 | **包身份在四处必须一致**：`package.json` 的 `name` 是唯一真源，`cordis.patch.yml` 每行 `name:`、`lib/client.js` 的 `__ModuleLoader__.load({id})`、每插件 `ns` 的包前缀（`<包名>.<键>`）与 `data-plugin-css` 前缀都必须等于它。前三处不等时**宿主不报错**：client 图按包名建、按 `id` 认领，不等则「插件 UI 整个消失 + 浏览器控制台一条 `loaded without registering`」，而 guard 与全部测试可以全绿（改名漏改 `id:` 的实测形态见本地 `docs/specs/active/ASSESS-pack-rename.md` §3.5）。**这就是改名必须先落地本行的原因** | guard「PK-14：包身份一致性」（以 `package.json.name` 为真源派生校验：`client.js` 的 `id` / patch 行 `name` / `ns` 前缀 / `data-plugin-css` 前缀） | L1 |
 
 ## tokprev（TP）
 
@@ -140,4 +141,5 @@
 | PO-02 的「不写会话日志」是 L0 | guard 只拦写盘调用，拦不住「经宿主 API 追加会话日志」这种形态（本包目前无此调用，靠评审） | 依赖评审 |
 | PK-07 的「整句模板 / one-other 成对」是 L0 | 键集一致性有自动断言，但「文案是否整句模板、记号是否误入词典」无法静态判定 | 依赖评审 |
 | PK-13 的静态项拦不住「宿主真的读了没有」 | guard 只校验文件结构、`exports` 键、`files` 项；宿主 `readPluginMeta` 是否真的把字典用上（插件页标题是否变了）**只能重启宿主目检**。静态项能证明「不该静默回退到包名」，不能证明「宿主已加载新元数据」 | 目检（每次改 `locale/` 后重启宿主看插件页） |
+| PK-14 只证明「四处字符串相等」 | guard 能拦下「包名改了但 `id:` / patch 行 / `ns` 前缀没跟上」，这是改名时唯一的静默失效点。但它**无法**证明浏览器侧真的建图成功——那取决于 `client-modules` 的解析结果与宿主版本，仍需重启目检 | 目检（改名后必须重启宿主看插件 UI 是否还在） |
 | 宿主契约版本矩阵未建 | 本包压着 DSH `0.2.1-rc.2` 的 7 个深契约，升级后的重验清单目前是 `docs/MAINTAINING.md` 的散文 + README「支持的 dsh 版本」的三步，不是矩阵 | 待建（见 AGENTS.md「按变更范围读取」） |
